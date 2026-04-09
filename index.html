@@ -428,110 +428,22 @@ print(f"Dtypes:\\n{df.dtypes}")
 // tquery Python source (bundled for Pyodide)
 // ---------------------------------------------------------------------------
 const TQUERY_FILES = {};
+const GITHUB_RAW = "https://raw.githubusercontent.com/hmelberg/thora/main/";
 
-</script>
-<script id="tquery-ast">
-TQUERY_FILES["_ast.py"] = `"""AST node definitions for the tquery temporal query language.
-
-All nodes are frozen (immutable) dataclasses with __slots__ for memory
-efficiency. Being frozen makes them hashable, which enables using them
-as cache keys in the evaluator.
-"""
-
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Union
-
-
-@dataclass(frozen=True, slots=True)
-class CodeAtom:
-    """A reference to one or more medical codes, optionally in specific columns."""
-    codes: tuple[str, ...]
-    columns: tuple[str, ...] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ComparisonAtom:
-    """A column comparison like 'glucose > 8'."""
-    column: str
-    op: str  # '>', '<', '>=', '<=', '==', '!='
-    value: float
-
-
-@dataclass(frozen=True, slots=True)
-class PrefixExpr:
-    kind: str
-    n: int
-    child: ASTNode
-
-
-@dataclass(frozen=True, slots=True)
-class RangePrefixExpr:
-    min_n: int
-    max_n: int
-    child: ASTNode
-
-
-@dataclass(frozen=True, slots=True)
-class NotExpr:
-    child: ASTNode
-
-
-@dataclass(frozen=True, slots=True)
-class BinaryLogical:
-    op: str
-    left: ASTNode
-    right: ASTNode
-
-
-@dataclass(frozen=True, slots=True)
-class TemporalExpr:
-    op: str
-    left: ASTNode
-    right: ASTNode
-
-
-@dataclass(frozen=True, slots=True)
-class WithinExpr:
-    child: ASTNode
-    days: int
-    min_days: int = 0
-    direction: str | None = None
-    ref: ASTNode | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class InsideExpr:
-    child: ASTNode
-    inside: bool
-    n_events: int
-    direction: str
-    ref: ASTNode
-
-
-ASTNode = Union[
-    CodeAtom, ComparisonAtom, PrefixExpr, RangePrefixExpr,
-    NotExpr, BinaryLogical, TemporalExpr, WithinExpr, InsideExpr,
-]
-`;
-</script>
-
-<script>
 // ---------------------------------------------------------------------------
-// Load tquery source from disk (relative fetch)
+// Load tquery source from GitHub
 // ---------------------------------------------------------------------------
 
 async function loadTquerySource() {
   const modules = [
-    "_types.py", "_cache.py", "_codes.py", "_parser.py", "_prefix.py",
+    "_ast.py", "_types.py", "_cache.py", "_codes.py", "_parser.py", "_prefix.py",
     "_temporal.py", "_evaluator.py", "_stringops.py", "_stringify.py",
     "_codebook.py", "_testdata.py", "_string_evaluator.py", "__init__.py"
   ];
   for (const mod of modules) {
     if (TQUERY_FILES[mod]) continue;
     try {
-      const resp = await fetch(`tquery/${mod}`);
+      const resp = await fetch(`${GITHUB_RAW}tquery/${mod}`);
       if (resp.ok) TQUERY_FILES[mod] = await resp.text();
     } catch(e) {}
   }
@@ -542,7 +454,7 @@ const CODEBOOK_FILES = {};
 async function loadCodebooks() {
   for (const f of ["atc_groups.csv", "icd10_chapters.csv"]) {
     try {
-      const resp = await fetch(`tquery/codebooks/${f}`);
+      const resp = await fetch(`${GITHUB_RAW}tquery/codebooks/${f}`);
       if (resp.ok) CODEBOOK_FILES[f] = await resp.text();
     } catch(e) {}
   }
