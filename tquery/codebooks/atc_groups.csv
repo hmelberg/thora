@@ -1,0 +1,52 @@
+code,label,level,system
+A,Alimentary tract and metabolism,1,atc
+B,Blood and blood forming organs,1,atc
+C,Cardiovascular system,1,atc
+D,Dermatologicals,1,atc
+G,Genito-urinary system and sex hormones,1,atc
+H,Systemic hormonal preparations,1,atc
+J,Antiinfectives for systemic use,1,atc
+L,Antineoplastic and immunomodulating agents,1,atc
+M,Musculo-skeletal system,1,atc
+N,Nervous system,1,atc
+P,Antiparasitic products insecticides and repellents,1,atc
+R,Respiratory system,1,atc
+S,Sensory organs,1,atc
+V,Various,1,atc
+A02,Drugs for acid related disorders,2,atc
+A10,Drugs used in diabetes,2,atc
+B01,Antithrombotic agents,2,atc
+C07,Beta blocking agents,2,atc
+C09,Agents acting on the renin-angiotensin system,2,atc
+C10,Lipid modifying agents,2,atc
+H02,Corticosteroids for systemic use,2,atc
+J01,Antibacterials for systemic use,2,atc
+J05,Antivirals for systemic use,2,atc
+L01,Antineoplastic agents,2,atc
+L04,Immunosuppressants,2,atc
+N02,Analgesics,2,atc
+N05,Psycholeptics,2,atc
+N06,Psychoanaleptics,2,atc
+A07EC,Aminosalicylic acid and similar agents,4,atc
+A10A,Insulins and analogues,3,atc
+A10B,Blood glucose lowering drugs excl insulins,3,atc
+A10BA,Biguanides,4,atc
+B01A,Antithrombotic agents,3,atc
+B01AF,Direct factor Xa inhibitors,4,atc
+C10AA,HMG CoA reductase inhibitors (statins),4,atc
+H02AB,Glucocorticoids,4,atc
+J01C,Beta-lactam antibacterials penicillins,3,atc
+J01CE,Beta-lactamase sensitive penicillins,4,atc
+J01CR,Combinations of penicillins incl beta-lactamase inhibitors,4,atc
+L04A,Immunosuppressants,3,atc
+L04AB,TNF-alpha inhibitors,4,atc
+L04AB02,Infliximab,5,atc
+L04AB04,Adalimumab,5,atc
+L04AB06,Golimumab,5,atc
+L04AC05,Ustekinumab,5,atc
+L04AA23,Natalizumab,5,atc
+L04AA33,Vedolizumab,5,atc
+N02A,Opioids,3,atc
+N02B,Other analgesics and antipyretics,3,atc
+N05BA,Benzodiazepine derivatives,4,atc
+N06A,Antidepressants,3,atc

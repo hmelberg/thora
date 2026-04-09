@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tquery playground</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Header */
+header { background: #161b22; border-bottom: 1px solid #30363d; padding: 8px 16px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+header h1 { font-size: 16px; font-weight: 600; color: #58a6ff; white-space: nowrap; }
+header .status { font-size: 12px; color: #8b949e; margin-left: auto; white-space: nowrap; }
+header .status.ready { color: #3fb950; }
+header .status.error { color: #f85149; }
+
+/* Main layout */
+.main { display: flex; flex: 1; min-height: 0; }
+
+/* Left panel: data */
+.panel-data { width: 420px; min-width: 200px; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; }
+
+/* Right panel: code + output */
+.panel-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+/* Panel headers */
+.panel-header { background: #161b22; border-bottom: 1px solid #30363d; padding: 6px 12px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+.panel-header label { font-size: 12px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+.panel-header select, .panel-header input[type="number"] { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+.panel-header input[type="number"] { width: 55px; }
+
+/* Textareas */
+textarea { background: #0d1117; color: #c9d1d9; border: none; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.5; padding: 8px 12px; resize: none; outline: none; width: 100%; }
+textarea:focus { background: #0d1117; }
+textarea::placeholder { color: #484f58; }
+
+/* Code editor */
+.code-area { flex-shrink: 0; border-bottom: 1px solid #30363d; display: flex; flex-direction: column; }
+.code-area textarea { height: 140px; }
+
+/* Data area */
+.data-area { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; transition: flex 0.2s; }
+.data-area textarea { flex: 1; }
+.data-area.collapsed { flex: 0 0 0; min-height: 0; overflow: hidden; }
+
+/* Output / Docs area */
+.output-tabs { display: flex; gap: 0; }
+.output-tabs button { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-bottom: none; border-radius: 4px 4px 0 0; padding: 4px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.output-tabs button.active { background: #0d1117; color: #c9d1d9; }
+.tab-content { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: auto; }
+.tab-content.active { display: flex; }
+
+.output-area { padding: 8px 12px; overflow: auto; flex: 1; }
+.output-area pre { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+.output-area img { max-width: 100%; margin: 8px 0; border-radius: 4px; background: #fff; }
+.output-error { color: #f85149; }
+.output-info { color: #8b949e; font-style: italic; }
+
+/* Docs panel */
+.docs-area { padding: 16px 24px; overflow: auto; flex: 1; max-width: 860px; }
+.docs-area h1 { font-size: 22px; color: #58a6ff; margin: 24px 0 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
+.docs-area h2 { font-size: 18px; color: #58a6ff; margin: 20px 0 10px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+.docs-area h3 { font-size: 15px; color: #79c0ff; margin: 16px 0 8px; }
+.docs-area h4 { font-size: 13px; color: #79c0ff; margin: 12px 0 6px; }
+.docs-area p { margin: 6px 0; line-height: 1.6; }
+.docs-area code { background: #1c2129; padding: 1px 5px; border-radius: 3px; color: #79c0ff; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 12px; }
+.docs-area pre { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin: 8px 0; overflow-x: auto; }
+.docs-area pre code { background: none; padding: 0; color: #c9d1d9; }
+.docs-area table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.docs-area th, .docs-area td { border: 1px solid #30363d; padding: 6px 10px; text-align: left; font-size: 13px; }
+.docs-area th { background: #161b22; color: #8b949e; font-weight: 600; }
+.docs-area td code { font-size: 12px; }
+.docs-area hr { border: none; border-top: 1px solid #30363d; margin: 16px 0; }
+.docs-area strong { color: #e6edf3; }
+.docs-area em { color: #8b949e; }
+.docs-area ul, .docs-area ol { margin: 6px 0 6px 24px; }
+.docs-area li { margin: 3px 0; line-height: 1.5; }
+
+/* Buttons */
+.toolbar { display: flex; align-items: center; gap: 6px; }
+button { background: #238636; color: #fff; border: none; border-radius: 4px; padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+button:hover { background: #2ea043; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.secondary { background: #30363d; color: #c9d1d9; }
+button.secondary:hover { background: #3d444d; }
+button.sm { padding: 2px 8px; font-size: 11px; font-weight: 500; }
+
+/* Example snippet buttons */
+.examples-bar { display: flex; gap: 4px; flex-wrap: wrap; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+.examples-bar button { background: #1c2129; color: #79c0ff; border: 1px solid #30363d; padding: 2px 8px; font-size: 11px; font-weight: 500; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; }
+.examples-bar button:hover { background: #30363d; color: #c9d1d9; }
+.examples-bar .bar-label { font-size: 11px; color: #484f58; align-self: center; margin-right: 2px; }
+
+/* Resize handles */
+.resize-h { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; }
+.resize-h:hover { background: #58a6ff; }
+.resize-v { height: 4px; cursor: row-resize; background: transparent; flex-shrink: 0; }
+.resize-v:hover { background: #58a6ff; }
+
+/* Spinner */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { width: 14px; height: 14px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.6s linear infinite; display: inline-block; }
+
+/* Type hints */
+.type-hint { font-size: 11px; color: #8b949e; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+.type-hint code { background: #1c2129; padding: 1px 4px; border-radius: 3px; color: #79c0ff; }
+
+/* Dataset tabs */
+.dataset-tabs { display: flex; gap: 2px; flex-wrap: wrap; }
+.dataset-tabs button { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px 4px 0 0; padding: 3px 10px; font-size: 11px; }
+.dataset-tabs button.active { background: #0d1117; color: #c9d1d9; border-bottom-color: #0d1117; }
+
+/* Keyboard shortcut hint */
+.shortcut { font-size: 11px; color: #484f58; }
+kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; padding: 0 4px; font-size: 11px; font-family: inherit; }
+
+/* Hidden file input */
+.file-input { display: none; }
+
+/* Data toolbar row */
+.data-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>tquery playground</h1>
+  <span class="shortcut"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to run</span>
+  <span id="status" class="status">Loading Pyodide...</span>
+</header>
+
+<div class="main">
+  <!-- Left: data panel -->
+  <div class="panel-data" id="panelData">
+    <div class="panel-header" style="flex-wrap: wrap; gap: 6px;">
+      <label>Data</label>
+      <div class="dataset-tabs" id="datasetTabs"></div>
+      <div class="data-toolbar" style="margin-left: auto;">
+        <button id="btnUpload" class="secondary sm" title="Upload CSV file">Upload</button>
+        <button id="btnToggleCsv" class="secondary sm" title="Show/hide CSV data">Hide</button>
+        <label style="margin-left: 4px;">Rows</label>
+        <input type="number" id="nRows" value="0" min="0" title="0 = all rows">
+      </div>
+    </div>
+    <input type="file" id="fileInput" class="file-input" accept=".csv,.tsv,.txt">
+    <div class="type-hint" id="typeHint">
+      Column types in headers: <code>date (datetime)</code> <code>icd (str)</code> <code>age (int)</code> <code>val (float)</code>. Plain = auto.
+    </div>
+    <div class="data-area" id="dataArea">
+      <textarea id="csvData" spellcheck="false" placeholder="Paste CSV data here or click Upload..."></textarea>
+    </div>
+  </div>
+
+  <div class="resize-h" id="resizeH"></div>
+
+  <!-- Right: code + output + docs -->
+  <div class="panel-right">
+    <!-- Code editor -->
+    <div class="code-area">
+      <div class="panel-header">
+        <label>Code</label>
+        <div class="toolbar">
+          <button id="btnRun" disabled>Run</button>
+          <button id="btnClear" class="secondary">Clear</button>
+        </div>
+      </div>
+      <div class="examples-bar" id="examplesBar">
+        <span class="bar-label">Examples:</span>
+      </div>
+      <textarea id="codeInput" spellcheck="false" placeholder="# df is your DataFrame, tquery is imported&#10;# Click an example above or write your own code"></textarea>
+    </div>
+
+    <div class="resize-v" id="resizeV"></div>
+
+    <!-- Output / Docs tabs -->
+    <div class="panel-header">
+      <div class="output-tabs">
+        <button id="tabOutput" class="active" data-tab="outputContent">Output</button>
+        <button id="tabDocs" data-tab="docsContent">Docs</button>
+      </div>
+    </div>
+    <div id="outputContent" class="tab-content active">
+      <div class="output-area" id="output">
+        <pre class="output-info">Initializing Python environment...</pre>
+      </div>
+    </div>
+    <div id="docsContent" class="tab-content">
+      <div class="docs-area" id="docsArea"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Preset datasets
+// ---------------------------------------------------------------------------
+const DATASETS = {
+  "IBD drugs": {
+    csv: `pid (int),start_date (datetime),atc (str),icd (str)
+1,2020-01-15,L04AB02,K50
+1,2020-04-10,L04AB02,K50.1
+1,2020-07-20,L04AB04,K50
+1,2020-10-05,L04AB02,K51
+1,2021-01-12,L04AB02,K50
+2,2019-06-01,L04AB04,K51
+2,2019-09-15,L04AB02,K50
+2,2020-01-20,L04AB06,K52
+2,2020-06-10,L04AB02,K50
+3,2020-03-01,L04AB02,K50
+3,2020-06-15,L04AB02,K50
+3,2020-09-20,L04AB02,K50.1
+3,2021-01-10,L04AB04,K51
+3,2021-04-05,L04AB04,K51
+4,2021-01-01,L04AB06,K52
+4,2021-04-15,L04AB04,K50
+4,2021-08-01,L04AB02,K50
+4,2021-11-20,L04AB02,K51
+5,2020-01-01,L04AB02,K50
+5,2020-02-01,L04AB04,K51`,
+    code: `# IBD drug treatment patterns
+from tquery import tquery, stringify_order, count_persons
+
+codes = {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}
+
+# Who switched from infliximab to adalimumab?
+print("=== L04AB02 (infliximab) before L04AB04 (adalimumab) ===")
+r = tquery(df, "L04AB02 before L04AB04", cols="atc")
+print(f"Persons: {r.count}  PIDs: {r.pids}")
+
+print()
+print("=== Treatment sequences ===")
+s = stringify_order(df, codes, cols="atc")
+for pid, seq in s.items():
+    print(f"  P{pid}: {seq}")
+
+print()
+print("=== min 3 of L04AB02 ===")
+print(f"Count: {count_persons(df, 'min 3 of L04AB02', cols='atc')}")
+`
+  },
+
+  "Hospital ICD": {
+    csv: `pid (int),start_date (datetime),icd (str)
+1,2020-01-01,K50
+1,2020-02-15,K51
+1,2020-05-01,K52
+1,2020-08-20,I50
+2,2020-01-01,K51
+2,2020-01-15,K50
+2,2020-06-01,K52
+2,2020-09-01,E11
+3,2020-03-01,K50
+3,2020-06-01,K50
+3,2020-09-01,K51
+3,2020-12-01,K50
+4,2019-01-01,E11
+4,2019-06-01,I10
+4,2020-01-01,I50
+4,2020-06-01,N18
+5,2020-01-01,K50
+5,2020-03-01,I10
+5,2020-06-01,K51
+5,2020-09-01,S72
+6,2020-02-01,J10
+6,2020-05-01,K50
+6,2020-08-01,K51
+6,2020-11-01,K52`,
+    code: `from tquery import tquery, count_persons, multi_query
+
+# Basic temporal queries
+print("=== K50 before K51 ===")
+r = tquery(df, "K50 before K51")
+print(f"Persons: {r.count}  PIDs: {r.pids}")
+
+print()
+print("=== Multi-query: K5x codes ===")
+mq = multi_query(df, "K5?[0,1,2]")
+print(mq.to_string())
+
+print()
+print("=== Compound: (min 2 of K50) before K51 ===")
+r2 = tquery(df, "(min 2 of K50) before K51")
+print(f"Persons: {r2.count}  PIDs: {r2.pids}")
+`
+  },
+
+  "Cross-validate": {
+    csv: `pid (int),start_date (datetime),atc (str)
+1,2020-01-01,L04AB02
+1,2020-04-01,L04AB02
+1,2020-07-01,L04AB04
+1,2020-10-01,L04AB02
+2,2020-01-01,L04AB04
+2,2020-04-01,L04AB02
+2,2020-07-01,L04AB06
+3,2020-01-01,L04AB02
+3,2020-04-01,L04AB02
+3,2020-07-01,L04AB02
+3,2020-10-01,L04AB04
+3,2021-01-01,L04AB04`,
+    code: `from tquery import cross_validate, string_query_auto, stringify_order
+
+codes = {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}
+
+exprs = [
+    "L04AB02",
+    "L04AB02 before L04AB04",
+    "min 2 of L04AB02",
+    "(min 2 of L04AB02) before L04AB04",
+    "L04AB02 and L04AB04",
+    "not L04AB06",
+    "1st of L04AB02 before 1st of L04AB04",
+]
+
+print("=== Cross-validation: DataFrame vs String evaluator ===")
+print()
+for expr in exprs:
+    df_pids, str_pids, match = cross_validate(df, expr, codes, cols="atc")
+    icon = "OK" if match else "FAIL"
+    print(f"  {icon}  {expr}")
+    if not match:
+        print(f"       df={df_pids}  str={str_pids}")
+
+print()
+print("=== Stringify patterns ===")
+s = stringify_order(df, codes, cols="atc")
+for pid, seq in s.items():
+    print(f"  P{pid}: {seq}")
+`
+  },
+
+  "Minimal": {
+    csv: `pid (int),start_date (datetime),code (str)
+1,2020-01-01,A
+1,2020-06-01,B
+2,2020-01-01,B
+2,2020-06-01,A
+3,2020-01-01,A
+3,2020-03-01,A
+3,2020-06-01,B`,
+    code: `from tquery import tquery
+
+print("=== A before B ===")
+r = tquery(df, "A before B", cols="code")
+print(f"Persons: {r.count}  PIDs: {r.pids}")
+
+print()
+print("=== min 2 of A ===")
+r2 = tquery(df, "min 2 of A", cols="code")
+print(f"Persons: {r2.count}  PIDs: {r2.pids}")
+
+print()
+print("=== DataFrame ===")
+print(df.to_string())
+`
+  },
+
+  "Empty": {
+    csv: `pid (int),start_date (datetime),code (str)`,
+    code: `# Start with your own data
+# Edit the CSV on the left, then write code here
+print(df)
+`
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Example code snippets
+// ---------------------------------------------------------------------------
+const EXAMPLES = [
+  { label: "before/after", code: `from tquery import tquery
+
+r = tquery(df, "K50 before K51")
+print(f"Count: {r.count}  PIDs: {r.pids}")
+` },
+  { label: "count", code: `from tquery import count_persons
+
+print("K50:", count_persons(df, "K50"))
+print("min 2 of K50:", count_persons(df, "min 2 of K50"))
+print("K50 and K51:", count_persons(df, "K50 and K51"))
+` },
+  { label: "stringify", code: `from tquery import stringify_order
+
+# Map codes to single-char labels
+codes = {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}
+
+s = stringify_order(df, codes, cols="atc")
+for pid, seq in s.items():
+    print(f"  P{pid}: {seq}")
+` },
+  { label: "multi_query", code: `from tquery import multi_query
+
+# Run parameterized queries with ?[...] slots
+result = multi_query(df, "K5?[0,1,2]")
+print(result.to_string())
+` },
+  { label: "cross_validate", code: `from tquery import cross_validate, stringify_order
+
+codes = {"a": ["K50"], "b": ["K51"], "c": ["K52"]}
+
+exprs = ["K50 before K51", "min 2 of K50", "not K52",
+         "(K50 or K51) before K52", "1st of K50 before 1st of K51"]
+
+for expr in exprs:
+    df_pids, str_pids, match = cross_validate(df, expr, codes)
+    print(f"  {'OK' if match else 'FAIL'}  {expr}")
+` },
+  { label: "search codes", code: `from tquery import search_codes, get_label
+
+print(search_codes("diabetes").to_string())
+print()
+print("L04AB02 =", get_label("L04AB02"))
+print("K50     =", get_label("K50"))
+` },
+  { label: "count codes", code: `# Count code frequencies
+counts = df.tq.count_codes()
+print(counts.to_string())
+` },
+  { label: "df.head()", code: `print(df.to_string())
+print()
+print(f"Shape: {df.shape}")
+print(f"Dtypes:\\n{df.dtypes}")
+` },
+];
+
+// ---------------------------------------------------------------------------
+// tquery Python source (bundled for Pyodide)
+// ---------------------------------------------------------------------------
+const TQUERY_FILES = {};
+
+</script>
+<script id="tquery-ast">
+TQUERY_FILES["_ast.py"] = `"""AST node definitions for the tquery temporal query language.
+
+All nodes are frozen (immutable) dataclasses with __slots__ for memory
+efficiency. Being frozen makes them hashable, which enables using them
+as cache keys in the evaluator.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Union
+
+
+@dataclass(frozen=True, slots=True)
+class CodeAtom:
+    """A reference to one or more medical codes, optionally in specific columns."""
+    codes: tuple[str, ...]
+    columns: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonAtom:
+    """A column comparison like 'glucose > 8'."""
+    column: str
+    op: str  # '>', '<', '>=', '<=', '==', '!='
+    value: float
+
+
+@dataclass(frozen=True, slots=True)
+class PrefixExpr:
+    kind: str
+    n: int
+    child: ASTNode
+
+
+@dataclass(frozen=True, slots=True)
+class RangePrefixExpr:
+    min_n: int
+    max_n: int
+    child: ASTNode
+
+
+@dataclass(frozen=True, slots=True)
+class NotExpr:
+    child: ASTNode
+
+
+@dataclass(frozen=True, slots=True)
+class BinaryLogical:
+    op: str
+    left: ASTNode
+    right: ASTNode
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalExpr:
+    op: str
+    left: ASTNode
+    right: ASTNode
+
+
+@dataclass(frozen=True, slots=True)
+class WithinExpr:
+    child: ASTNode
+    days: int
+    min_days: int = 0
+    direction: str | None = None
+    ref: ASTNode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InsideExpr:
+    child: ASTNode
+    inside: bool
+    n_events: int
+    direction: str
+    ref: ASTNode
+
+
+ASTNode = Union[
+    CodeAtom, ComparisonAtom, PrefixExpr, RangePrefixExpr,
+    NotExpr, BinaryLogical, TemporalExpr, WithinExpr, InsideExpr,
+]
+`;
+</script>
+
+<script>
+// ---------------------------------------------------------------------------
+// Load tquery source from disk (relative fetch)
+// ---------------------------------------------------------------------------
+
+async function loadTquerySource() {
+  const modules = [
+    "_types.py", "_cache.py", "_codes.py", "_parser.py", "_prefix.py",
+    "_temporal.py", "_evaluator.py", "_stringops.py", "_stringify.py",
+    "_codebook.py", "_testdata.py", "_string_evaluator.py", "__init__.py"
+  ];
+  for (const mod of modules) {
+    if (TQUERY_FILES[mod]) continue;
+    try {
+      const resp = await fetch(`tquery/${mod}`);
+      if (resp.ok) TQUERY_FILES[mod] = await resp.text();
+    } catch(e) {}
+  }
+  return modules.filter(m => !TQUERY_FILES[m]);
+}
+
+const CODEBOOK_FILES = {};
+async function loadCodebooks() {
+  for (const f of ["atc_groups.csv", "icd10_chapters.csv"]) {
+    try {
+      const resp = await fetch(`tquery/codebooks/${f}`);
+      if (resp.ok) CODEBOOK_FILES[f] = await resp.text();
+    } catch(e) {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pyodide initialization
+// ---------------------------------------------------------------------------
+
+let pyodide = null;
+
+async function initPyodide() {
+  const statusEl = document.getElementById("status");
+  try {
+    statusEl.textContent = "Loading Pyodide...";
+    pyodide = await loadPyodide();
+
+    statusEl.textContent = "Installing pandas...";
+    await pyodide.loadPackage("micropip");
+    const micropip = pyodide.pyimport("micropip");
+    await micropip.install("pandas");
+
+    statusEl.textContent = "Loading tquery source...";
+    await loadTquerySource();
+    await loadCodebooks();
+
+    pyodide.FS.mkdir("/tquery_pkg");
+    pyodide.FS.mkdir("/tquery_pkg/tquery");
+    pyodide.FS.mkdir("/tquery_pkg/tquery/codebooks");
+
+    for (const [name, content] of Object.entries(TQUERY_FILES)) {
+      pyodide.FS.writeFile(`/tquery_pkg/tquery/${name}`, content);
+    }
+    for (const [name, content] of Object.entries(CODEBOOK_FILES)) {
+      pyodide.FS.writeFile(`/tquery_pkg/tquery/codebooks/${name}`, content);
+    }
+
+    await pyodide.runPythonAsync(`
+import sys
+sys.path.insert(0, "/tquery_pkg")
+import pandas as pd
+import numpy as np
+import io
+try:
+    import tquery
+    from tquery import (
+        tquery as _tq_func, count_persons, event_counts, multi_query,
+        stringify_order, stringify_time, stringify_durations,
+        string_query, string_query_auto, cross_validate,
+        extract_codes, count_codes, search_codes, get_label,
+        TQueryConfig, use, get_config,
+    )
+    _TQUERY_AVAILABLE = True
+except Exception as e:
+    _TQUERY_AVAILABLE = False
+    print(f"Warning: tquery import failed: {e}")
+`);
+
+    const tqAvail = pyodide.globals.get("_TQUERY_AVAILABLE");
+    if (tqAvail) {
+      statusEl.textContent = "Ready (tquery + pandas)";
+      statusEl.className = "status ready";
+    } else {
+      statusEl.textContent = "Ready (pandas only, tquery failed)";
+      statusEl.className = "status error";
+    }
+    document.getElementById("btnRun").disabled = false;
+    showOutput('<span class="output-info">Ready. Write code and press Ctrl+Enter or click Run.</span>');
+  } catch(e) {
+    statusEl.textContent = "Error: " + e.message;
+    statusEl.className = "status error";
+    showOutput(`<pre class="output-error">Failed to initialize: ${e.message}</pre>`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CSV parsing with type annotations
+// ---------------------------------------------------------------------------
+
+function buildDfCode(csvText, maxRows) {
+  const lines = csvText.trim().split("\n").filter(l => l.trim());
+  if (lines.length === 0) return "df = pd.DataFrame()";
+
+  const rawCols = lines[0].split(",").map(s => s.trim());
+  const colNames = [];
+  const colTypes = {};
+  const typeRe = /^(.+?)\s*\((\w+)\)\s*$/;
+
+  for (const raw of rawCols) {
+    const m = raw.match(typeRe);
+    if (m) {
+      colNames.push(m[1].trim());
+      colTypes[m[1].trim()] = m[2].toLowerCase();
+    } else {
+      colNames.push(raw);
+    }
+  }
+
+  let dataLines = lines.slice(1);
+  if (maxRows > 0 && dataLines.length > maxRows) dataLines = dataLines.slice(0, maxRows);
+
+  const cleanCsv = [colNames.join(","), ...dataLines].join("\n");
+  let code = `\n_csv_text = """${cleanCsv}"""\ndf = pd.read_csv(io.StringIO(_csv_text))\n`;
+
+  for (const [col, type] of Object.entries(colTypes)) {
+    switch(type) {
+      case "datetime": case "date":
+        code += `df["${col}"] = pd.to_datetime(df["${col}"])\n`; break;
+      case "int": case "integer":
+        code += `df["${col}"] = df["${col}"].astype(int)\n`; break;
+      case "float": case "double":
+        code += `df["${col}"] = df["${col}"].astype(float)\n`; break;
+      case "str": case "string": case "object":
+        code += `df["${col}"] = df["${col}"].astype(str)\n`; break;
+      case "category": case "cat":
+        code += `df["${col}"] = df["${col}"].astype("category")\n`; break;
+    }
+  }
+  code += `df = df.sort_values([c for c in df.columns[:2]]).reset_index(drop=True)\n`;
+  return code;
+}
+
+// ---------------------------------------------------------------------------
+// Code execution
+// ---------------------------------------------------------------------------
+
+async function runCode() {
+  if (!pyodide) return;
+  // Switch to output tab
+  switchTab("outputContent");
+
+  const btnRun = document.getElementById("btnRun");
+  btnRun.disabled = true;
+  btnRun.innerHTML = '<span class="spinner"></span>';
+
+  const csvText = document.getElementById("csvData").value;
+  const userCode = document.getElementById("codeInput").value;
+  const maxRows = parseInt(document.getElementById("nRows").value) || 0;
+
+  try {
+    const dfCode = buildDfCode(csvText, maxRows);
+    const fullCode = `
+import sys, io
+
+${dfCode}
+
+_old_stdout = sys.stdout
+sys.stdout = _capture_buf = io.StringIO()
+_plot_data = None
+
+try:
+    _has_plt = False
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        _has_plt = True
+        plt.close('all')
+    except ImportError:
+        pass
+
+    _result = None
+    _lines = """${userCode.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"').replace(/\n/g, '\\n')}""".strip().split("\\n")
+    _exec_code = "\\n".join(_lines)
+
+    import ast as _ast_mod
+    try:
+        _tree = _ast_mod.parse(_exec_code)
+        if _tree.body and isinstance(_tree.body[-1], _ast_mod.Expr):
+            _last_expr = _ast_mod.Expression(body=_tree.body[-1].value)
+            _ast_mod.fix_missing_locations(_last_expr)
+            _rest = _ast_mod.Module(body=_tree.body[:-1], type_ignores=[])
+            _ast_mod.fix_missing_locations(_rest)
+            exec(compile(_rest, "<playground>", "exec"))
+            _result = eval(compile(_last_expr, "<playground>", "eval"))
+        else:
+            exec(compile(_tree, "<playground>", "exec"))
+    except SyntaxError:
+        exec(_exec_code)
+
+    if _has_plt and plt.get_fignums():
+        import base64
+        _fig_buf = io.BytesIO()
+        plt.savefig(_fig_buf, format='png', dpi=100, bbox_inches='tight',
+                    facecolor='#0d1117', edgecolor='none')
+        plt.close('all')
+        _fig_buf.seek(0)
+        _plot_data = base64.b64encode(_fig_buf.read()).decode('ascii')
+
+    _captured = _capture_buf.getvalue()
+
+    if _result is not None:
+        if isinstance(_result, pd.DataFrame):
+            _captured += _result.to_string() + "\\n"
+        elif isinstance(_result, pd.Series):
+            _captured += _result.to_string() + "\\n"
+        else:
+            _captured += repr(_result) + "\\n"
+
+except Exception as _e:
+    import traceback
+    _captured = _capture_buf.getvalue()
+    _captured += "\\n" + traceback.format_exc()
+    _plot_data = None
+finally:
+    sys.stdout = _old_stdout
+
+(_captured, _plot_data)
+`;
+    const result = await pyodide.runPythonAsync(fullCode);
+    const captured = result.get(0);
+    const plotData = result.get(1);
+    result.destroy();
+
+    let html = "";
+    if (captured && captured.trim()) {
+      if (captured.includes("Traceback (most recent call last)")) {
+        html += `<pre class="output-error">${escapeHtml(captured)}</pre>`;
+      } else {
+        html += `<pre>${escapeHtml(captured)}</pre>`;
+      }
+    }
+    if (plotData) html += `<img src="data:image/png;base64,${plotData}" alt="plot">`;
+    if (!html) html = '<pre class="output-info">(no output)</pre>';
+    showOutput(html);
+  } catch(e) {
+    showOutput(`<pre class="output-error">${escapeHtml(e.message)}</pre>`);
+  } finally {
+    btnRun.disabled = false;
+    btnRun.textContent = "Run";
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function showOutput(html) {
+  document.getElementById("output").innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Dataset tabs
+// ---------------------------------------------------------------------------
+
+function initDatasetTabs() {
+  const container = document.getElementById("datasetTabs");
+  let first = true;
+  for (const name of Object.keys(DATASETS)) {
+    const btn = document.createElement("button");
+    btn.textContent = name;
+    btn.className = first ? "active" : "";
+    btn.addEventListener("click", () => selectDataset(name, btn));
+    container.appendChild(btn);
+    if (first) selectDataset(name, btn);
+    first = false;
+  }
+}
+
+function selectDataset(name, btn) {
+  const ds = DATASETS[name];
+  document.getElementById("csvData").value = ds.csv;
+  document.getElementById("codeInput").value = ds.code;
+  document.getElementById("nRows").value = 0;
+  document.querySelectorAll("#datasetTabs button").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+  // Ensure data is visible
+  const area = document.getElementById("dataArea");
+  if (area.classList.contains("collapsed")) toggleCsv();
+}
+
+// ---------------------------------------------------------------------------
+// File upload
+// ---------------------------------------------------------------------------
+
+function initUpload() {
+  const fileInput = document.getElementById("fileInput");
+  document.getElementById("btnUpload").addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      document.getElementById("csvData").value = ev.target.result;
+      // Clear active dataset tab
+      document.querySelectorAll("#datasetTabs button").forEach(b => b.classList.remove("active"));
+      // Ensure visible
+      const area = document.getElementById("dataArea");
+      if (area.classList.contains("collapsed")) toggleCsv();
+    };
+    reader.readAsText(file);
+    fileInput.value = ""; // reset so same file can be re-uploaded
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Toggle CSV visibility
+// ---------------------------------------------------------------------------
+
+function toggleCsv() {
+  const area = document.getElementById("dataArea");
+  const btn = document.getElementById("btnToggleCsv");
+  const hint = document.getElementById("typeHint");
+  if (area.classList.contains("collapsed")) {
+    area.classList.remove("collapsed");
+    hint.style.display = "";
+    btn.textContent = "Hide";
+  } else {
+    area.classList.add("collapsed");
+    hint.style.display = "none";
+    btn.textContent = "Show";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Example snippet buttons
+// ---------------------------------------------------------------------------
+
+function initExamples() {
+  const bar = document.getElementById("examplesBar");
+  for (const ex of EXAMPLES) {
+    const btn = document.createElement("button");
+    btn.textContent = ex.label;
+    btn.addEventListener("click", () => {
+      document.getElementById("codeInput").value = ex.code;
+      document.querySelectorAll("#datasetTabs button").forEach(b => b.classList.remove("active"));
+    });
+    bar.appendChild(btn);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Output / Docs tabs
+// ---------------------------------------------------------------------------
+
+function switchTab(tabId) {
+  document.querySelectorAll(".output-tabs button").forEach(b => {
+    b.classList.toggle("active", b.dataset.tab === tabId);
+  });
+  document.querySelectorAll(".tab-content").forEach(tc => {
+    tc.classList.toggle("active", tc.id === tabId);
+  });
+}
+
+function initTabs() {
+  document.querySelectorAll(".output-tabs button").forEach(btn => {
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Docs: render markdown to HTML (simple converter)
+// ---------------------------------------------------------------------------
+
+function renderMarkdown(md) {
+  // Pre-process: protect code blocks
+  const codeBlocks = [];
+  md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    codeBlocks.push(`<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`);
+    return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
+  });
+
+  // Inline code
+  md = md.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Tables
+  md = md.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)*)/gm, (_, header, sep, body) => {
+    const ths = header.split("|").slice(1, -1).map(h => `<th>${h.trim()}</th>`).join("");
+    const rows = body.trim().split("\n").map(row => {
+      const tds = row.split("|").slice(1, -1).map(c => `<td>${c.trim()}</td>`).join("");
+      return `<tr>${tds}</tr>`;
+    }).join("\n");
+    return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
+  });
+
+  const lines = md.split("\n");
+  let html = "";
+  let inList = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+
+    // Code block placeholder
+    const cbMatch = line.match(/^%%CODEBLOCK_(\d+)%%$/);
+    if (cbMatch) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += codeBlocks[parseInt(cbMatch[1])];
+      continue;
+    }
+
+    // Headings
+    if (line.startsWith("#### ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h4>${line.slice(5)}</h4>`; continue; }
+    if (line.startsWith("### ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h3>${line.slice(4)}</h3>`; continue; }
+    if (line.startsWith("## ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h2>${line.slice(3)}</h2>`; continue; }
+    if (line.startsWith("# ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h1>${line.slice(2)}</h1>`; continue; }
+
+    // HR
+    if (/^---+$/.test(line.trim())) { if (inList) { html += "</ul>"; inList = false; } html += "<hr>"; continue; }
+
+    // List items
+    if (/^- /.test(line)) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${line.slice(2)}</li>`;
+      continue;
+    }
+
+    // End list if not a list item
+    if (inList && line.trim() === "") { html += "</ul>"; inList = false; continue; }
+
+    // Bold and italic
+    line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    line = line.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+    // Table lines (already handled above in block form) — skip raw table lines
+    if (line.startsWith("|")) continue;
+
+    // Paragraphs
+    if (line.trim() === "") {
+      if (inList) { html += "</ul>"; inList = false; }
+      continue;
+    }
+    html += `<p>${line}</p>`;
+  }
+  if (inList) html += "</ul>";
+  return html;
+}
+
+function initDocs() {
+  const md = DOCS_MD;
+  document.getElementById("docsArea").innerHTML = renderMarkdown(md);
+}
+
+// ---------------------------------------------------------------------------
+// Resizable panels
+// ---------------------------------------------------------------------------
+
+function initResize() {
+  const resizeH = document.getElementById("resizeH");
+  const panelData = document.getElementById("panelData");
+  let startX, startW;
+  resizeH.addEventListener("mousedown", e => {
+    startX = e.clientX; startW = panelData.offsetWidth;
+    const onMove = e2 => { panelData.style.width = Math.max(200, startW + e2.clientX - startX) + "px"; };
+    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  });
+
+  const resizeV = document.getElementById("resizeV");
+  const codeTa = document.getElementById("codeInput");
+  let startY, startH;
+  resizeV.addEventListener("mousedown", e => {
+    startY = e.clientY; startH = codeTa.offsetHeight;
+    const onMove = e2 => { codeTa.style.height = Math.max(40, startH + e2.clientY - startY) + "px"; };
+    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts & tab key
+// ---------------------------------------------------------------------------
+
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    if (!document.getElementById("btnRun").disabled) runCode();
+  }
+});
+
+document.querySelectorAll("textarea").forEach(ta => {
+  ta.addEventListener("keydown", e => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const s = ta.selectionStart, end = ta.selectionEnd;
+      ta.value = ta.value.substring(0, s) + "    " + ta.value.substring(end);
+      ta.selectionStart = ta.selectionEnd = s + 4;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Docs content (embedded markdown)
+// ---------------------------------------------------------------------------
+
+const DOCS_MD = `# tquery: Temporal Query Language for Health Event Data
+
+## Quick Start
+
+\`\`\`python
+import tquery
+
+# df is your event-level DataFrame with pid, start_date, and code columns
+result = tquery.tquery(df, 'K50 before K51')
+result.count     # number of matching persons
+result.pids      # set of person IDs
+
+# pandas accessor
+df.tq('K50 before K51').count
+df.tq.count('min 2 of K50')
+\`\`\`
+
+---
+
+## The Query Language
+
+#### Code Matching
+
+| Expression | Meaning |
+|-----------|---------|
+| \`K50\` | Events with code K50 |
+| \`K50, K51, K52\` | Events with any of these codes |
+| \`K50*\` | Wildcard: all codes starting with K50 |
+| \`K50-K53\` | Range: codes from K50 to K53 (alphabetic) |
+| \`@antibiotics\` | Variable: codes from a predefined list |
+
+#### Column Specification
+
+| Expression | Meaning |
+|-----------|---------|
+| \`K50 in icd\` | Search only in the 'icd' column |
+| \`K50 in icd1, icd2\` | Search in multiple named columns |
+| \`K50 in icd*\` | Search in all columns starting with 'icd' |
+
+#### Temporal Ordering
+
+| Expression | Meaning |
+|-----------|---------|
+| \`K50 before K51\` | K50 occurs before K51 (same person) |
+| \`K50 after K51\` | K50 occurs after K51 |
+| \`K50 simultaneously K51\` | K50 and K51 on the same date |
+
+#### Time Windows
+
+| Expression | Meaning |
+|-----------|---------|
+| \`K50 within 90 days\` | K50 within 90 days of first event |
+| \`K50 within 90 days after K51\` | K50 within 90 days following K51 |
+| \`K50 within 30 days before K51\` | K50 within 30 days preceding K51 |
+| \`K50 between 30 and 90 days after K51\` | K50 between 30-90 days after K51 |
+
+#### Event Windows
+
+| Expression | Meaning |
+|-----------|---------|
+| \`K50 inside 5 events after K51\` | K50 within next 5 events after K51 |
+| \`K50 outside 10 events before K51\` | K50 not within 10 events before K51 |
+
+#### Quantifiers (Counts)
+
+| Expression | Meaning |
+|-----------|---------|
+| \`min 2 of K50\` | Persons with at least 2 K50 events |
+| \`max 3 of K50\` | Persons with at most 3 K50 events |
+| \`exactly 1 of K50\` | Persons with exactly 1 K50 event |
+| \`2-5 of K50\` | Persons with 2 to 5 K50 events |
+
+#### Positional Selection
+
+| Expression | Meaning |
+|-----------|---------|
+| \`1st of K50\` | Only the first K50 event per person |
+| \`2nd of K50\` | Only the second K50 event |
+| \`first 3 of K50\` | The first 3 K50 events per person |
+| \`last 2 of K50\` | The last 2 K50 events per person |
+
+#### Logical Operators
+
+| Expression | Meaning |
+|-----------|---------|
+| \`K50 and K51\` | Person has both codes |
+| \`K50 or K51\` | Person has either code |
+| \`not K50\` | Person does not have K50 |
+
+#### Column Comparisons
+
+| Expression | Meaning |
+|-----------|---------|
+| \`glucose > 8\` | Rows where glucose > 8 |
+| \`hba1c >= 6.5\` | Rows where hba1c >= 6.5 |
+
+---
+
+### Compound Expressions
+
+Expressions combine freely with parentheses:
+
+\`\`\`python
+'(K50 or K51) before K52'
+'min 2 of glucose>8 within 60 days'
+'1st of K50 before 1st of K51'
+'(min 2 of K50) and (K51 before K52)'
+'not K52 and K50 before K51'
+\`\`\`
+
+### Operator Precedence (low to high)
+
+1. \`or\`
+2. \`and\`
+3. \`before\` / \`after\` / \`simultaneously\`
+4. \`not\`
+5. \`min\` / \`max\` / \`exactly\` / ordinals / \`first\` / \`last\`
+6. \`within\` / \`between\` / \`inside\` / \`outside\`
+7. Atoms (codes, comparisons, parenthesized sub-expressions)
+
+---
+
+## Results
+
+Every query returns a \`TQueryResult\`:
+
+\`\`\`python
+result = df.tq('K50 before K51')
+
+result.count          # int: matching persons
+result.pids           # set: {1, 3, 7, ...}
+result.persons        # Series: pid -> True/False
+result.rows           # Series: row-level boolean mask
+result.event_counts   # Series: pid -> count
+result.filter()       # DataFrame: all rows for matching persons
+result.filter('rows') # DataFrame: only matching rows
+\`\`\`
+
+---
+
+## Parameterized Queries
+
+\`\`\`python
+tquery.multi_query(df, 'K5?[0,1,2] before K51')
+# K50 before K51    234
+# K51 before K51      0
+# K52 before K51     89
+
+tquery.multi_query(df, 'K50 within ?[30,60,90] days after K51')
+\`\`\`
+
+| Syntax | Expands to |
+|--------|-----------|
+| \`?[0,1,2]\` | 0, 1, 2 |
+| \`?[K50,K51]\` | K50, K51 |
+| \`?[0-9]\` | 0 through 9 |
+| \`?[50-53]\` | 50, 51, 52, 53 |
+
+---
+
+## Treatment Pattern Strings
+
+### stringify_order - Event order
+
+\`\`\`python
+codes = {'i': ['L04AB02'], 'a': ['L04AB04'], 'g': ['L04AB06']}
+tquery.stringify_order(df, codes, cols='atc')
+# pid
+# 1    iiaga
+# 2    aig
+\`\`\`
+
+Options: \`keep_repeats=False\` (remove consecutive repeats), \`only_unique=True\` (first of each).
+
+### stringify_time - Time-positioned
+
+\`\`\`python
+tquery.stringify_time(df, codes, cols='atc', step=90)
+# Each character position = 90-day period
+\`\`\`
+
+### stringify_durations - Duration-filled
+
+\`\`\`python
+tquery.stringify_durations(df, codes, cols='atc', event_duration='days', step=30)
+# Events fill their entire duration
+\`\`\`
+
+---
+
+## Cross-Validation (String Evaluator)
+
+Test whether query logic is correct by evaluating the same expression against stringify output:
+
+\`\`\`python
+from tquery import cross_validate
+
+codes = {"i": ["L04AB02"], "a": ["L04AB04"]}
+
+# Returns (df_pids, string_pids, match)
+df_pids, str_pids, match = cross_validate(
+    df, "L04AB02 before L04AB04", codes, cols="atc"
+)
+assert match  # True if both evaluators agree
+\`\`\`
+
+Also available: \`string_query()\` and \`string_query_auto()\`.
+
+---
+
+## Codebooks
+
+\`\`\`python
+tquery.get_label('K50')       # 'Diseases of the digestive system'
+tquery.get_label('L04AB02')   # 'Infliximab'
+tquery.search_codes('diabetes')
+df.tq.labels(cols='icd')      # Adds label columns
+df.tq.count_codes(cols='icd') # Code frequency table
+\`\`\`
+
+---
+
+## Configuration
+
+\`\`\`python
+from tquery import TQueryConfig, use
+
+hospital = TQueryConfig(
+    pid='pasient_id',
+    date='inn_dato',
+    cols=['hoved', 'bi1', 'bi2'],
+    name='Hospital',
+)
+tquery.use(hospital)
+df.tq('K50 before K51').count
+\`\`\`
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| \`pid\` | \`'pid'\` | Person ID column |
+| \`date\` | \`'start_date'\` | Event date column |
+| \`cols\` | \`None\` | Code columns (None = auto) |
+| \`sep\` | \`None\` | Multi-value separator |
+| \`variables\` | \`None\` | @variable code lists |
+
+---
+
+## Medical Query Examples
+
+\`\`\`python
+# Cardiology
+df.tq('C10AA within 90 days after I21').count   # statin after MI
+df.tq('I50 within 30 days after I50').count     # HF readmission
+
+# Diabetes
+df.tq('A10BA02 before A10AE').count             # metformin before insulin
+
+# IBD
+df.tq('L04AB02 before A07EC02').count           # biologic before 5-ASA
+df.tq('min 3 of H02AB06 within 365 days').count # steroid-dependent
+
+# Antibiotics
+df.tq('A047 within 60 days after J01').count    # C. diff after antibiotics
+\`\`\`
+
+---
+
+## Data Format
+
+tquery expects a DataFrame with:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| Person ID | int/str | Identifies the individual (default: \`pid\`) |
+| Event date | datetime | When it occurred (default: \`start_date\`) |
+| Code column(s) | str | Medical codes (ICD, ATC, etc.) |
+
+Sort by (pid, date) for best performance. Multi-value cells supported with \`sep=','\`.
+`;
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+document.getElementById("btnRun").addEventListener("click", runCode);
+document.getElementById("btnClear").addEventListener("click", () => showOutput(""));
+document.getElementById("btnToggleCsv").addEventListener("click", toggleCsv);
+
+initDatasetTabs();
+initUpload();
+initExamples();
+initTabs();
+initDocs();
+initResize();
+
+// Load Pyodide from CDN
+const pyodideScript = document.createElement("script");
+pyodideScript.src = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js";
+pyodideScript.onload = initPyodide;
+pyodideScript.onerror = () => {
+  document.getElementById("status").textContent = "Failed to load Pyodide";
+  document.getElementById("status").className = "status error";
+};
+document.head.appendChild(pyodideScript);
+</script>
+</body>
+</html>
