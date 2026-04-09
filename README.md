@@ -25,7 +25,7 @@ df.tq.multi("K5?[0,1,2] before L04AB?[02,04,06]")
 ## Installation
 
 ```bash
-pip install -e .
+pip install git+https://github.com/hmelberg/thora.git
 ```
 
 Requires Python 3.10+ and pandas.

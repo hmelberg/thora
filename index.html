@@ -185,8 +185,8 @@ kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; paddin
     <div class="code-area">
       <div class="panel-header">
         <div class="mode-tabs">
-          <button class="active" data-mode="code">Code</button>
-          <button data-mode="count">Count</button>
+          <button data-mode="code">Code</button>
+          <button class="active" data-mode="count">Count</button>
         </div>
         <div class="toolbar">
           <button id="btnRun" disabled>Run</button>
@@ -197,7 +197,7 @@ kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; paddin
         <select id="exampleCategory"></select>
         <span id="exampleButtons"></span>
       </div>
-      <textarea id="codeInput" spellcheck="false" placeholder="# df is loaded. tquery is imported. Click an example or write code.&#10;# Try: df.tq('K50 before K51').count"></textarea>
+      <textarea id="codeInput" class="count-mode" spellcheck="false" placeholder="Type a tquery expression, e.g. K50 before K51"></textarea>
     </div>
 
     <div class="resize-v" id="resizeV"></div>
@@ -539,7 +539,7 @@ function showEditMode() {
 }
 
 let currentCsvText = "";
-let currentMode = "code"; // "code" or "count"
+let currentMode = "count"; // "code" or "count"
 
 // ---------------------------------------------------------------------------
 // Code execution
@@ -618,16 +618,19 @@ try:
 
     _captured = _capture_buf.getvalue()
 
+    # Check for TQueryResult to highlight matching persons
+    from tquery._types import TQueryResult as _TQR
+
     if _result is not None:
-        if isinstance(_result, pd.DataFrame):
+        if isinstance(_result, _TQR):
+            _captured += str(_result.count) + "\\n"
+        elif isinstance(_result, pd.DataFrame):
             _captured += _result.to_string() + "\\n"
         elif isinstance(_result, pd.Series):
             _captured += _result.to_string() + "\\n"
         else:
             _captured += repr(_result) + "\\n"
 
-    # Check for TQueryResult to highlight matching persons
-    from tquery._types import TQueryResult as _TQR
     if isinstance(_result, _TQR):
         _highlight_pids = list(_result.pids)
         _highlight_count = _result.count
@@ -798,12 +801,20 @@ function initExamples() {
   const catSelect = document.getElementById("exampleCategory");
   const btnContainer = document.getElementById("exampleButtons");
 
+  // Add placeholder label
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Examples:";
+  placeholder.disabled = true;
+  catSelect.appendChild(placeholder);
+
   for (const cat of Object.keys(EXAMPLES)) {
     const opt = document.createElement("option");
     opt.value = cat;
     opt.textContent = cat;
     catSelect.appendChild(opt);
   }
+  catSelect.value = Object.keys(EXAMPLES)[0];
 
   function showCategory(cat) {
     btnContainer.innerHTML = "";
@@ -956,12 +967,18 @@ document.querySelectorAll("textarea").forEach(ta => {
 
 const DOCS_MD = `# tquery: Temporal Query Language
 
+## Installation
+
+\`\`\`
+pip install git+https://github.com/hmelberg/thora.git
+\`\`\`
+
 ## Quick Start
 
 \`\`\`python
-# df is your event-level DataFrame
-# tquery is auto-imported in the playground
+import tquery
 
+# df is your event-level DataFrame
 df.tq('K50 before K51').count
 df.tq.count('min 2 of K50')
 \`\`\`

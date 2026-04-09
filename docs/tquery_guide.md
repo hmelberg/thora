@@ -22,6 +22,14 @@ The library also includes tools for **treatment pattern visualization** (stringi
 
 ---
 
+## Installation
+
+```bash
+pip install git+https://github.com/hmelberg/thora.git
+```
+
+---
+
 ## Quick Start
 
 ```python
