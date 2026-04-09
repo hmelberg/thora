@@ -143,9 +143,11 @@ kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; paddin
 <body>
 
 <header>
-  <h1>Thora</h1>
-  <span style="font-size: 12px; color: #8b949e; margin-right: 8px;">Temporal health register analysis in pandas — answer questions like "how many patients had three events of X within 100 days of a Y" when you have event data (prescriptions, hospital visits) in a pandas dataframe.</span>
-  <span class="shortcut"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to run</span>
+  <div style="display: flex; flex-direction: column; gap: 2px;">
+    <h1>Thora: <span style="font-weight: 400; color: #c9d1d9;">Temporal health register analysis in pandas</span></h1>
+    <span style="font-size: 11px; color: #8b949e;">A library that makes it easy to answer questions like "how many patients have three events of X within 100 days of a Y" when you have event data (prescriptions, hospital visits)</span>
+  </div>
+  <span class="shortcut" style="margin-left: auto;"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to run</span>
   <span id="status" class="status">Loading Pyodide...</span>
 </header>
 
