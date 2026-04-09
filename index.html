@@ -45,6 +45,12 @@ textarea::placeholder { color: #484f58; }
 /* Code editor */
 .code-area { flex-shrink: 0; border-bottom: 1px solid #30363d; display: flex; flex-direction: column; }
 .code-area textarea { height: 100px; }
+.code-area textarea.count-mode { height: 36px; font-size: 15px; padding: 6px 12px; }
+
+/* Mode tabs */
+.mode-tabs { display: flex; gap: 0; }
+.mode-tabs button { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-bottom: none; border-radius: 4px 4px 0 0; padding: 4px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.mode-tabs button.active { background: #0d1117; color: #c9d1d9; }
 
 /* Data area */
 .data-area { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
@@ -171,7 +177,10 @@ kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; paddin
     <!-- Code editor -->
     <div class="code-area">
       <div class="panel-header">
-        <label>Code</label>
+        <div class="mode-tabs">
+          <button class="active" data-mode="code">Code</button>
+          <button data-mode="count">Count</button>
+        </div>
         <div class="toolbar">
           <button id="btnRun" disabled>Run</button>
           <button id="btnClear" class="secondary">Clear</button>
@@ -523,6 +532,7 @@ function showEditMode() {
 }
 
 let currentCsvText = "";
+let currentMode = "code"; // "code" or "count"
 
 // ---------------------------------------------------------------------------
 // Code execution
@@ -538,7 +548,13 @@ async function runCode() {
   const csvEl = document.getElementById("csvData");
   const csvText = csvEl ? csvEl.value : currentCsvText;
   currentCsvText = csvText;
-  const userCode = document.getElementById("codeInput").value;
+  let userCode = document.getElementById("codeInput").value;
+
+  // In count mode, wrap the expression as df.tq.count("...")
+  if (currentMode === "count" && userCode.trim()) {
+    const expr = userCode.trim().replace(/"/g, '\\"');
+    userCode = `df.tq("${expr}")`;
+  }
 
   try {
     const dfCode = buildDfCode(csvText, 0);
@@ -735,6 +751,39 @@ function initLeftTabs() {
 }
 
 // ---------------------------------------------------------------------------
+// Code / Count mode toggle
+// ---------------------------------------------------------------------------
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll(".mode-tabs button").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+  const ta = document.getElementById("codeInput");
+  if (mode === "count") {
+    // If current content looks like code, try to extract expression
+    const m = ta.value.match(/df\.tq\(["'](.+?)["']\)/);
+    if (m) ta.value = m[1];
+    ta.placeholder = 'Type a tquery expression, e.g. K50 before K51';
+    ta.classList.add("count-mode");
+  } else {
+    const expr = ta.value.trim();
+    // If it looks like a bare expression (no dots, no parens at start), wrap it
+    if (expr && !expr.includes("(") && !expr.startsWith("df") && !expr.startsWith("#")) {
+      ta.value = `df.tq("${expr}").count`;
+    }
+    ta.placeholder = '# df is loaded. tquery is imported. Click an example or write code.\n# Try: df.tq(\'K50 before K51\').count';
+    ta.classList.remove("count-mode");
+  }
+}
+
+function initModeTabs() {
+  document.querySelectorAll(".mode-tabs button").forEach(btn => {
+    btn.addEventListener("click", () => switchMode(btn.dataset.mode));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Example snippet buttons (categorized)
 // ---------------------------------------------------------------------------
 
@@ -756,7 +805,13 @@ function initExamples() {
       btn.textContent = ex.label;
       btn.title = ex.code;
       btn.addEventListener("click", () => {
-        document.getElementById("codeInput").value = ex.code;
+        if (currentMode === "count") {
+          // Extract expression from df.tq("...") pattern
+          const m = ex.code.match(/df\.tq\(["'](.+?)["']\)/);
+          document.getElementById("codeInput").value = m ? m[1] : ex.code;
+        } else {
+          document.getElementById("codeInput").value = ex.code;
+        }
       });
       btnContainer.appendChild(btn);
     }
@@ -1107,6 +1162,7 @@ initDatasetSelect();
 initUpload();
 initExamples();
 initLeftTabs();
+initModeTabs();
 initDocs();
 initResize();
 
