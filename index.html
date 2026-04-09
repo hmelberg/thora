@@ -18,8 +18,8 @@ header .status.error { color: #f85149; }
 /* Main layout */
 .main { display: flex; flex: 1; min-height: 0; }
 
-/* Left panel: data */
-.panel-data { width: 420px; min-width: 200px; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; }
+/* Left panel */
+.panel-left { width: 420px; min-width: 200px; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; }
 
 /* Right panel: code + output */
 .panel-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -30,6 +30,13 @@ header .status.error { color: #f85149; }
 .panel-header select, .panel-header input[type="number"] { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 12px; }
 .panel-header input[type="number"] { width: 55px; }
 
+/* Left panel tabs */
+.left-tabs { display: flex; gap: 0; }
+.left-tabs button { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-bottom: none; border-radius: 4px 4px 0 0; padding: 4px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.left-tabs button.active { background: #0d1117; color: #c9d1d9; }
+.left-content { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: hidden; }
+.left-content.active { display: flex; }
+
 /* Textareas */
 textarea { background: #0d1117; color: #c9d1d9; border: none; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.5; padding: 8px 12px; resize: none; outline: none; width: 100%; }
 textarea:focus { background: #0d1117; }
@@ -37,20 +44,26 @@ textarea::placeholder { color: #484f58; }
 
 /* Code editor */
 .code-area { flex-shrink: 0; border-bottom: 1px solid #30363d; display: flex; flex-direction: column; }
-.code-area textarea { height: 140px; }
+.code-area textarea { height: 100px; }
 
 /* Data area */
-.data-area { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; transition: flex 0.2s; }
+.data-area { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .data-area textarea { flex: 1; }
-.data-area.collapsed { flex: 0 0 0; min-height: 0; overflow: hidden; }
 
-/* Output / Docs area */
-.output-tabs { display: flex; gap: 0; }
-.output-tabs button { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-bottom: none; border-radius: 4px 4px 0 0; padding: 4px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.output-tabs button.active { background: #0d1117; color: #c9d1d9; }
-.tab-content { flex: 1; display: none; flex-direction: column; min-height: 0; overflow: auto; }
-.tab-content.active { display: flex; }
+/* Data table (highlighted view) */
+.data-table-wrap { flex: 1; overflow: auto; }
+.data-table { border-collapse: collapse; width: 100%; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 12px; }
+.data-table th { background: #161b22; color: #8b949e; font-weight: 600; padding: 4px 8px; text-align: left; border: 1px solid #30363d; position: sticky; top: 0; z-index: 1; }
+.data-table td { padding: 3px 8px; border: 1px solid #21262d; color: #c9d1d9; }
+.data-table tr.match { background: #1a3a1a; }
+.data-table tr.match td { color: #3fb950; }
+.data-table tr:not(.match) { background: #0d1117; }
+.match-summary { font-size: 12px; color: #8b949e; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+.match-summary strong { color: #3fb950; }
+.match-summary .edit-link { color: #58a6ff; cursor: pointer; margin-left: 8px; }
+.match-summary .edit-link:hover { text-decoration: underline; }
 
+/* Output area */
 .output-area { padding: 8px 12px; overflow: auto; flex: 1; }
 .output-area pre { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
 .output-area img { max-width: 100%; margin: 8px 0; border-radius: 4px; background: #fff; }
@@ -87,10 +100,10 @@ button.secondary:hover { background: #3d444d; }
 button.sm { padding: 2px 8px; font-size: 11px; font-weight: 500; }
 
 /* Example snippet buttons */
-.examples-bar { display: flex; gap: 4px; flex-wrap: wrap; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+.examples-bar { display: flex; gap: 4px; flex-wrap: wrap; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; align-items: center; }
+.examples-bar select { background: #0d1117; color: #79c0ff; border: 1px solid #30363d; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 600; }
 .examples-bar button { background: #1c2129; color: #79c0ff; border: 1px solid #30363d; padding: 2px 8px; font-size: 11px; font-weight: 500; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; }
 .examples-bar button:hover { background: #30363d; color: #c9d1d9; }
-.examples-bar .bar-label { font-size: 11px; color: #484f58; align-self: center; margin-right: 2px; }
 
 /* Resize handles */
 .resize-h { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; }
@@ -106,20 +119,12 @@ button.sm { padding: 2px 8px; font-size: 11px; font-weight: 500; }
 .type-hint { font-size: 11px; color: #8b949e; padding: 4px 12px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; }
 .type-hint code { background: #1c2129; padding: 1px 4px; border-radius: 3px; color: #79c0ff; }
 
-/* Dataset tabs */
-.dataset-tabs { display: flex; gap: 2px; flex-wrap: wrap; }
-.dataset-tabs button { background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px 4px 0 0; padding: 3px 10px; font-size: 11px; }
-.dataset-tabs button.active { background: #0d1117; color: #c9d1d9; border-bottom-color: #0d1117; }
-
 /* Keyboard shortcut hint */
 .shortcut { font-size: 11px; color: #484f58; }
 kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; padding: 0 4px; font-size: 11px; font-family: inherit; }
 
 /* Hidden file input */
 .file-input { display: none; }
-
-/* Data toolbar row */
-.data-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 </style>
 </head>
 <body>
@@ -131,30 +136,37 @@ kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; paddin
 </header>
 
 <div class="main">
-  <!-- Left: data panel -->
-  <div class="panel-data" id="panelData">
-    <div class="panel-header" style="flex-wrap: wrap; gap: 6px;">
-      <label>Data</label>
-      <div class="dataset-tabs" id="datasetTabs"></div>
-      <div class="data-toolbar" style="margin-left: auto;">
+  <!-- Left: data / docs panel -->
+  <div class="panel-left" id="panelLeft">
+    <div class="panel-header">
+      <div class="left-tabs">
+        <button class="active" data-left="dataContent">Data</button>
+        <button data-left="docsContent">Docs</button>
+      </div>
+      <div class="toolbar" style="margin-left: auto;" id="dataToolbar">
+        <select id="datasetSelect"></select>
         <button id="btnUpload" class="secondary sm" title="Upload CSV file">Upload</button>
-        <button id="btnToggleCsv" class="secondary sm" title="Show/hide CSV data">Hide</button>
-        <label style="margin-left: 4px;">Rows</label>
-        <input type="number" id="nRows" value="0" min="0" title="0 = all rows">
       </div>
     </div>
-    <input type="file" id="fileInput" class="file-input" accept=".csv,.tsv,.txt">
-    <div class="type-hint" id="typeHint">
-      Column types in headers: <code>date (datetime)</code> <code>icd (str)</code> <code>age (int)</code> <code>val (float)</code>. Plain = auto.
+    <!-- Data content -->
+    <div id="dataContent" class="left-content active">
+      <div class="type-hint" id="typeHint">
+        Column types: <code>date (datetime)</code> <code>icd (str)</code> <code>age (int)</code> <code>val (float)</code>
+      </div>
+      <div class="data-area" id="dataArea">
+        <textarea id="csvData" spellcheck="false" placeholder="Paste CSV data here or click Upload..."></textarea>
+      </div>
     </div>
-    <div class="data-area" id="dataArea">
-      <textarea id="csvData" spellcheck="false" placeholder="Paste CSV data here or click Upload..."></textarea>
+    <!-- Docs content -->
+    <div id="docsContent" class="left-content">
+      <div class="docs-area" id="docsArea"></div>
     </div>
   </div>
 
+  <input type="file" id="fileInput" class="file-input" accept=".csv,.tsv,.txt">
   <div class="resize-h" id="resizeH"></div>
 
-  <!-- Right: code + output + docs -->
+  <!-- Right: code + output -->
   <div class="panel-right">
     <!-- Code editor -->
     <div class="code-area">
@@ -166,82 +178,32 @@ kbd { background: #21262d; border: 1px solid #30363d; border-radius: 3px; paddin
         </div>
       </div>
       <div class="examples-bar" id="examplesBar">
-        <span class="bar-label">Examples:</span>
+        <select id="exampleCategory"></select>
+        <span id="exampleButtons"></span>
       </div>
-      <textarea id="codeInput" spellcheck="false" placeholder="# df is your DataFrame, tquery is imported&#10;# Click an example above or write your own code"></textarea>
+      <textarea id="codeInput" spellcheck="false" placeholder="# df is loaded. tquery is imported. Click an example or write code.&#10;# Try: df.tq('K50 before K51').count"></textarea>
     </div>
 
     <div class="resize-v" id="resizeV"></div>
 
-    <!-- Output / Docs tabs -->
+    <!-- Output -->
     <div class="panel-header">
-      <div class="output-tabs">
-        <button id="tabOutput" class="active" data-tab="outputContent">Output</button>
-        <button id="tabDocs" data-tab="docsContent">Docs</button>
-      </div>
+      <label>Output</label>
     </div>
-    <div id="outputContent" class="tab-content active">
+    <div style="flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto;">
       <div class="output-area" id="output">
         <pre class="output-info">Initializing Python environment...</pre>
       </div>
-    </div>
-    <div id="docsContent" class="tab-content">
-      <div class="docs-area" id="docsArea"></div>
     </div>
   </div>
 </div>
 
 <script>
 // ---------------------------------------------------------------------------
-// Preset datasets
+// Preset datasets (CSV only, no code)
 // ---------------------------------------------------------------------------
 const DATASETS = {
-  "IBD drugs": {
-    csv: `pid (int),start_date (datetime),atc (str),icd (str)
-1,2020-01-15,L04AB02,K50
-1,2020-04-10,L04AB02,K50.1
-1,2020-07-20,L04AB04,K50
-1,2020-10-05,L04AB02,K51
-1,2021-01-12,L04AB02,K50
-2,2019-06-01,L04AB04,K51
-2,2019-09-15,L04AB02,K50
-2,2020-01-20,L04AB06,K52
-2,2020-06-10,L04AB02,K50
-3,2020-03-01,L04AB02,K50
-3,2020-06-15,L04AB02,K50
-3,2020-09-20,L04AB02,K50.1
-3,2021-01-10,L04AB04,K51
-3,2021-04-05,L04AB04,K51
-4,2021-01-01,L04AB06,K52
-4,2021-04-15,L04AB04,K50
-4,2021-08-01,L04AB02,K50
-4,2021-11-20,L04AB02,K51
-5,2020-01-01,L04AB02,K50
-5,2020-02-01,L04AB04,K51`,
-    code: `# IBD drug treatment patterns
-from tquery import tquery, stringify_order, count_persons
-
-codes = {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}
-
-# Who switched from infliximab to adalimumab?
-print("=== L04AB02 (infliximab) before L04AB04 (adalimumab) ===")
-r = tquery(df, "L04AB02 before L04AB04", cols="atc")
-print(f"Persons: {r.count}  PIDs: {r.pids}")
-
-print()
-print("=== Treatment sequences ===")
-s = stringify_order(df, codes, cols="atc")
-for pid, seq in s.items():
-    print(f"  P{pid}: {seq}")
-
-print()
-print("=== min 3 of L04AB02 ===")
-print(f"Count: {count_persons(df, 'min 3 of L04AB02', cols='atc')}")
-`
-  },
-
-  "Hospital ICD": {
-    csv: `pid (int),start_date (datetime),icd (str)
+  "Hospital ICD": `pid (int),start_date (datetime),icd (str)
 1,2020-01-01,K50
 1,2020-02-15,K51
 1,2020-05-01,K52
@@ -266,72 +228,30 @@ print(f"Count: {count_persons(df, 'min 3 of L04AB02', cols='atc')}")
 6,2020-05-01,K50
 6,2020-08-01,K51
 6,2020-11-01,K52`,
-    code: `from tquery import tquery, count_persons, multi_query
 
-# Basic temporal queries
-print("=== K50 before K51 ===")
-r = tquery(df, "K50 before K51")
-print(f"Persons: {r.count}  PIDs: {r.pids}")
+  "IBD drugs": `pid (int),start_date (datetime),atc (str),icd (str)
+1,2020-01-15,L04AB02,K50
+1,2020-04-10,L04AB02,K50.1
+1,2020-07-20,L04AB04,K50
+1,2020-10-05,L04AB02,K51
+1,2021-01-12,L04AB02,K50
+2,2019-06-01,L04AB04,K51
+2,2019-09-15,L04AB02,K50
+2,2020-01-20,L04AB06,K52
+2,2020-06-10,L04AB02,K50
+3,2020-03-01,L04AB02,K50
+3,2020-06-15,L04AB02,K50
+3,2020-09-20,L04AB02,K50.1
+3,2021-01-10,L04AB04,K51
+3,2021-04-05,L04AB04,K51
+4,2021-01-01,L04AB06,K52
+4,2021-04-15,L04AB04,K50
+4,2021-08-01,L04AB02,K50
+4,2021-11-20,L04AB02,K51
+5,2020-01-01,L04AB02,K50
+5,2020-02-01,L04AB04,K51`,
 
-print()
-print("=== Multi-query: K5x codes ===")
-mq = multi_query(df, "K5?[0,1,2]")
-print(mq.to_string())
-
-print()
-print("=== Compound: (min 2 of K50) before K51 ===")
-r2 = tquery(df, "(min 2 of K50) before K51")
-print(f"Persons: {r2.count}  PIDs: {r2.pids}")
-`
-  },
-
-  "Cross-validate": {
-    csv: `pid (int),start_date (datetime),atc (str)
-1,2020-01-01,L04AB02
-1,2020-04-01,L04AB02
-1,2020-07-01,L04AB04
-1,2020-10-01,L04AB02
-2,2020-01-01,L04AB04
-2,2020-04-01,L04AB02
-2,2020-07-01,L04AB06
-3,2020-01-01,L04AB02
-3,2020-04-01,L04AB02
-3,2020-07-01,L04AB02
-3,2020-10-01,L04AB04
-3,2021-01-01,L04AB04`,
-    code: `from tquery import cross_validate, string_query_auto, stringify_order
-
-codes = {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}
-
-exprs = [
-    "L04AB02",
-    "L04AB02 before L04AB04",
-    "min 2 of L04AB02",
-    "(min 2 of L04AB02) before L04AB04",
-    "L04AB02 and L04AB04",
-    "not L04AB06",
-    "1st of L04AB02 before 1st of L04AB04",
-]
-
-print("=== Cross-validation: DataFrame vs String evaluator ===")
-print()
-for expr in exprs:
-    df_pids, str_pids, match = cross_validate(df, expr, codes, cols="atc")
-    icon = "OK" if match else "FAIL"
-    print(f"  {icon}  {expr}")
-    if not match:
-        print(f"       df={df_pids}  str={str_pids}")
-
-print()
-print("=== Stringify patterns ===")
-s = stringify_order(df, codes, cols="atc")
-for pid, seq in s.items():
-    print(f"  P{pid}: {seq}")
-`
-  },
-
-  "Minimal": {
-    csv: `pid (int),start_date (datetime),code (str)
+  "Minimal": `pid (int),start_date (datetime),code (str)
 1,2020-01-01,A
 1,2020-06-01,B
 2,2020-01-01,B
@@ -339,100 +259,70 @@ for pid, seq in s.items():
 3,2020-01-01,A
 3,2020-03-01,A
 3,2020-06-01,B`,
-    code: `from tquery import tquery
 
-print("=== A before B ===")
-r = tquery(df, "A before B", cols="code")
-print(f"Persons: {r.count}  PIDs: {r.pids}")
-
-print()
-print("=== min 2 of A ===")
-r2 = tquery(df, "min 2 of A", cols="code")
-print(f"Persons: {r2.count}  PIDs: {r2.pids}")
-
-print()
-print("=== DataFrame ===")
-print(df.to_string())
-`
-  },
-
-  "Empty": {
-    csv: `pid (int),start_date (datetime),code (str)`,
-    code: `# Start with your own data
-# Edit the CSV on the left, then write code here
-print(df)
-`
-  },
+  "Empty": `pid (int),start_date (datetime),code (str)`,
 };
 
 // ---------------------------------------------------------------------------
-// Example code snippets
+// Categorized examples (single-line, no imports)
 // ---------------------------------------------------------------------------
-const EXAMPLES = [
-  { label: "before/after", code: `from tquery import tquery
-
-r = tquery(df, "K50 before K51")
-print(f"Count: {r.count}  PIDs: {r.pids}")
-` },
-  { label: "count", code: `from tquery import count_persons
-
-print("K50:", count_persons(df, "K50"))
-print("min 2 of K50:", count_persons(df, "min 2 of K50"))
-print("K50 and K51:", count_persons(df, "K50 and K51"))
-` },
-  { label: "stringify", code: `from tquery import stringify_order
-
-# Map codes to single-char labels
-codes = {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}
-
-s = stringify_order(df, codes, cols="atc")
-for pid, seq in s.items():
-    print(f"  P{pid}: {seq}")
-` },
-  { label: "multi_query", code: `from tquery import multi_query
-
-# Run parameterized queries with ?[...] slots
-result = multi_query(df, "K5?[0,1,2]")
-print(result.to_string())
-` },
-  { label: "cross_validate", code: `from tquery import cross_validate, stringify_order
-
-codes = {"a": ["K50"], "b": ["K51"], "c": ["K52"]}
-
-exprs = ["K50 before K51", "min 2 of K50", "not K52",
-         "(K50 or K51) before K52", "1st of K50 before 1st of K51"]
-
-for expr in exprs:
-    df_pids, str_pids, match = cross_validate(df, expr, codes)
-    print(f"  {'OK' if match else 'FAIL'}  {expr}")
-` },
-  { label: "search codes", code: `from tquery import search_codes, get_label
-
-print(search_codes("diabetes").to_string())
-print()
-print("L04AB02 =", get_label("L04AB02"))
-print("K50     =", get_label("K50"))
-` },
-  { label: "count codes", code: `# Count code frequencies
-counts = df.tq.count_codes()
-print(counts.to_string())
-` },
-  { label: "df.head()", code: `print(df.to_string())
-print()
-print(f"Shape: {df.shape}")
-print(f"Dtypes:\\n{df.dtypes}")
-` },
-];
+const EXAMPLES = {
+  "Basic queries": [
+    { label: "has code",     code: `df.tq("K50").count` },
+    { label: "before",       code: `df.tq("K50 before K51").count` },
+    { label: "after",        code: `df.tq("K50 after K51").count` },
+    { label: "and",          code: `df.tq("K50 and K51").count` },
+    { label: "or",           code: `df.tq("K50 or K51").count` },
+    { label: "not",          code: `df.tq("not K50").count` },
+  ],
+  "Time windows": [
+    { label: "within days",        code: `df.tq("K50 within 180 days after K51").count` },
+    { label: "between days",       code: `df.tq("K50 between 30 and 180 days after K51").count` },
+    { label: "simultaneously",     code: `df.tq("K50 simultaneously K51").count` },
+    { label: "within before",      code: `df.tq("K50 within 90 days before K51").count` },
+  ],
+  "Counting": [
+    { label: "min N",        code: `df.tq("min 2 of K50").count` },
+    { label: "max N",        code: `df.tq("max 3 of K50").count` },
+    { label: "exactly N",    code: `df.tq("exactly 1 of K50").count` },
+    { label: "range 2-5",    code: `df.tq("2-5 of K50").count` },
+    { label: "1st before",   code: `df.tq("1st K50 before K51").count` },
+    { label: "last 2",       code: `df.tq("last 2 of K50").count` },
+  ],
+  "Compound": [
+    { label: "min + before",    code: `df.tq("(min 2 of K50) before K51").count` },
+    { label: "or + before",     code: `df.tq("(K50 or K51) before K52").count` },
+    { label: "not + and",       code: `df.tq("not K52 and K50 before K51").count` },
+    { label: "wildcard",        code: `df.tq("K50 before K5*").count` },
+    { label: "nested",          code: `df.tq("(min 2 of K50) and (K51 before K52)").count` },
+  ],
+  "Results": [
+    { label: "count",         code: `df.tq("K50 before K51").count` },
+    { label: "pids",          code: `df.tq("K50 before K51").pids` },
+    { label: "filter persons",code: `df.tq("K50 before K51").filter()` },
+    { label: "filter rows",   code: `df.tq("K50 before K51").filter("rows")` },
+    { label: "event counts",  code: `df.tq("K50").event_counts` },
+    { label: "row mask",      code: `df.tq("K50 before K51").rows` },
+  ],
+  "Explore data": [
+    { label: "count codes",   code: `df.tq.count_codes()` },
+    { label: "search codes",  code: `search_codes("diabetes")` },
+    { label: "get label",     code: `get_label("K50")` },
+    { label: "labels",        code: `df.tq.labels()` },
+    { label: "multi query",   code: `multi_query(df, "K5?[0,1,2]")` },
+    { label: "show data",     code: `df` },
+  ],
+  "Stringify": [
+    { label: "order",    code: `stringify_order(df, {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}, cols="atc")` },
+    { label: "time",     code: `stringify_time(df, {"i": ["L04AB02"], "a": ["L04AB04"]}, cols="atc", step=90)` },
+  ],
+};
 
 // ---------------------------------------------------------------------------
-// tquery Python source (bundled for Pyodide)
+// tquery Python source
 // ---------------------------------------------------------------------------
 const TQUERY_FILES = {};
 const GITHUB_RAW = "https://raw.githubusercontent.com/hmelberg/thora/main/";
-
-// ---------------------------------------------------------------------------
-// Load tquery source from GitHub
-// ---------------------------------------------------------------------------
 
 async function loadTquerySource() {
   const modules = [
@@ -578,24 +468,81 @@ function buildDfCode(csvText, maxRows) {
 }
 
 // ---------------------------------------------------------------------------
+// Highlight matching persons in data table
+// ---------------------------------------------------------------------------
+
+function renderHighlightedTable(csvText, matchPids, matchCount, totalPersons) {
+  const dataArea = document.getElementById("dataArea");
+  const lines = csvText.trim().split("\n").filter(l => l.trim());
+  if (lines.length < 2) return;
+
+  const typeRe = /^(.+?)\s*\((\w+)\)\s*$/;
+  const rawCols = lines[0].split(",").map(s => s.trim());
+  const colNames = rawCols.map(r => { const m = r.match(typeRe); return m ? m[1].trim() : r; });
+
+  // Build summary + table
+  let html = `<div class="match-summary"><strong>${matchCount}</strong> of ${totalPersons} persons match <span class="edit-link" onclick="showEditMode()">[edit data]</span></div>`;
+  html += '<div class="data-table-wrap"><table class="data-table"><thead><tr>';
+  for (const col of colNames) html += `<th>${escapeHtml(col)}</th>`;
+  html += '</tr></thead><tbody>';
+
+  const pidSet = new Set(matchPids.map(String));
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(",").map(s => s.trim());
+    const pid = cells[0];
+    const cls = pidSet.has(pid) ? ' class="match"' : '';
+    html += `<tr${cls}>`;
+    for (const cell of cells) html += `<td>${escapeHtml(cell)}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+
+  dataArea.innerHTML = html;
+}
+
+function showEditMode() {
+  const dataArea = document.getElementById("dataArea");
+  const csv = document.getElementById("csvData");
+  // Restore textarea
+  dataArea.innerHTML = '';
+  const ta = document.createElement("textarea");
+  ta.id = "csvData";
+  ta.spellcheck = false;
+  ta.placeholder = "Paste CSV data here or click Upload...";
+  ta.value = currentCsvText;
+  ta.style.flex = "1";
+  dataArea.appendChild(ta);
+  // Re-bind tab key
+  ta.addEventListener("keydown", e => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const s = ta.selectionStart, end = ta.selectionEnd;
+      ta.value = ta.value.substring(0, s) + "    " + ta.value.substring(end);
+      ta.selectionStart = ta.selectionEnd = s + 4;
+    }
+  });
+}
+
+let currentCsvText = "";
+
+// ---------------------------------------------------------------------------
 // Code execution
 // ---------------------------------------------------------------------------
 
 async function runCode() {
   if (!pyodide) return;
-  // Switch to output tab
-  switchTab("outputContent");
 
   const btnRun = document.getElementById("btnRun");
   btnRun.disabled = true;
   btnRun.innerHTML = '<span class="spinner"></span>';
 
-  const csvText = document.getElementById("csvData").value;
+  const csvEl = document.getElementById("csvData");
+  const csvText = csvEl ? csvEl.value : currentCsvText;
+  currentCsvText = csvText;
   const userCode = document.getElementById("codeInput").value;
-  const maxRows = parseInt(document.getElementById("nRows").value) || 0;
 
   try {
-    const dfCode = buildDfCode(csvText, maxRows);
+    const dfCode = buildDfCode(csvText, 0);
     const fullCode = `
 import sys, io
 
@@ -604,6 +551,9 @@ ${dfCode}
 _old_stdout = sys.stdout
 sys.stdout = _capture_buf = io.StringIO()
 _plot_data = None
+_highlight_pids = None
+_highlight_count = 0
+_total_persons = 0
 
 try:
     _has_plt = False
@@ -654,19 +604,30 @@ try:
         else:
             _captured += repr(_result) + "\\n"
 
+    # Check for TQueryResult to highlight matching persons
+    from tquery._types import TQueryResult as _TQR
+    if isinstance(_result, _TQR):
+        _highlight_pids = list(_result.pids)
+        _highlight_count = _result.count
+        _total_persons = int(df[df.columns[0]].nunique())
+
 except Exception as _e:
     import traceback
     _captured = _capture_buf.getvalue()
     _captured += "\\n" + traceback.format_exc()
     _plot_data = None
+    _highlight_pids = None
 finally:
     sys.stdout = _old_stdout
 
-(_captured, _plot_data)
+(_captured, _plot_data, _highlight_pids, _highlight_count, _total_persons)
 `;
     const result = await pyodide.runPythonAsync(fullCode);
     const captured = result.get(0);
     const plotData = result.get(1);
+    const highlightPids = result.get(2);
+    const highlightCount = result.get(3);
+    const totalPersons = result.get(4);
     result.destroy();
 
     let html = "";
@@ -680,6 +641,15 @@ finally:
     if (plotData) html += `<img src="data:image/png;base64,${plotData}" alt="plot">`;
     if (!html) html = '<pre class="output-info">(no output)</pre>';
     showOutput(html);
+
+    // Highlight matching persons in data panel
+    if (highlightPids) {
+      const pidsArray = highlightPids.toJs();
+      highlightPids.destroy();
+      // Switch left panel to data tab
+      switchLeftTab("dataContent");
+      renderHighlightedTable(currentCsvText, pidsArray, highlightCount, totalPersons);
+    }
   } catch(e) {
     showOutput(`<pre class="output-error">${escapeHtml(e.message)}</pre>`);
   } finally {
@@ -697,33 +667,28 @@ function showOutput(html) {
 }
 
 // ---------------------------------------------------------------------------
-// Dataset tabs
+// Dataset dropdown
 // ---------------------------------------------------------------------------
 
-function initDatasetTabs() {
-  const container = document.getElementById("datasetTabs");
+function initDatasetSelect() {
+  const sel = document.getElementById("datasetSelect");
   let first = true;
   for (const name of Object.keys(DATASETS)) {
-    const btn = document.createElement("button");
-    btn.textContent = name;
-    btn.className = first ? "active" : "";
-    btn.addEventListener("click", () => selectDataset(name, btn));
-    container.appendChild(btn);
-    if (first) selectDataset(name, btn);
-    first = false;
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+    if (first) { selectDataset(name); first = false; }
   }
+  sel.addEventListener("change", () => selectDataset(sel.value));
 }
 
-function selectDataset(name, btn) {
-  const ds = DATASETS[name];
-  document.getElementById("csvData").value = ds.csv;
-  document.getElementById("codeInput").value = ds.code;
-  document.getElementById("nRows").value = 0;
-  document.querySelectorAll("#datasetTabs button").forEach(b => b.classList.remove("active"));
-  if (btn) btn.classList.add("active");
-  // Ensure data is visible
-  const area = document.getElementById("dataArea");
-  if (area.classList.contains("collapsed")) toggleCsv();
+function selectDataset(name) {
+  const csv = DATASETS[name];
+  currentCsvText = csv;
+  showEditMode();
+  document.getElementById("csvData").value = csv;
+  switchLeftTab("dataContent");
 }
 
 // ---------------------------------------------------------------------------
@@ -738,71 +703,68 @@ function initUpload() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = ev => {
-      document.getElementById("csvData").value = ev.target.result;
-      // Clear active dataset tab
-      document.querySelectorAll("#datasetTabs button").forEach(b => b.classList.remove("active"));
-      // Ensure visible
-      const area = document.getElementById("dataArea");
-      if (area.classList.contains("collapsed")) toggleCsv();
+      currentCsvText = ev.target.result;
+      showEditMode();
+      document.getElementById("csvData").value = currentCsvText;
+      switchLeftTab("dataContent");
     };
     reader.readAsText(file);
-    fileInput.value = ""; // reset so same file can be re-uploaded
+    fileInput.value = "";
   });
 }
 
 // ---------------------------------------------------------------------------
-// Toggle CSV visibility
+// Left panel tabs (Data / Docs)
 // ---------------------------------------------------------------------------
 
-function toggleCsv() {
-  const area = document.getElementById("dataArea");
-  const btn = document.getElementById("btnToggleCsv");
-  const hint = document.getElementById("typeHint");
-  if (area.classList.contains("collapsed")) {
-    area.classList.remove("collapsed");
-    hint.style.display = "";
-    btn.textContent = "Hide";
-  } else {
-    area.classList.add("collapsed");
-    hint.style.display = "none";
-    btn.textContent = "Show";
-  }
+function switchLeftTab(tabId) {
+  document.querySelectorAll(".left-tabs button").forEach(b => {
+    b.classList.toggle("active", b.dataset.left === tabId);
+  });
+  document.querySelectorAll(".left-content").forEach(tc => {
+    tc.classList.toggle("active", tc.id === tabId);
+  });
+  // Show/hide data toolbar
+  const toolbar = document.getElementById("dataToolbar");
+  toolbar.style.display = tabId === "dataContent" ? "" : "none";
+}
+
+function initLeftTabs() {
+  document.querySelectorAll(".left-tabs button").forEach(btn => {
+    btn.addEventListener("click", () => switchLeftTab(btn.dataset.left));
+  });
 }
 
 // ---------------------------------------------------------------------------
-// Example snippet buttons
+// Example snippet buttons (categorized)
 // ---------------------------------------------------------------------------
 
 function initExamples() {
-  const bar = document.getElementById("examplesBar");
-  for (const ex of EXAMPLES) {
-    const btn = document.createElement("button");
-    btn.textContent = ex.label;
-    btn.addEventListener("click", () => {
-      document.getElementById("codeInput").value = ex.code;
-      document.querySelectorAll("#datasetTabs button").forEach(b => b.classList.remove("active"));
-    });
-    bar.appendChild(btn);
+  const catSelect = document.getElementById("exampleCategory");
+  const btnContainer = document.getElementById("exampleButtons");
+
+  for (const cat of Object.keys(EXAMPLES)) {
+    const opt = document.createElement("option");
+    opt.value = cat;
+    opt.textContent = cat;
+    catSelect.appendChild(opt);
   }
-}
 
-// ---------------------------------------------------------------------------
-// Output / Docs tabs
-// ---------------------------------------------------------------------------
+  function showCategory(cat) {
+    btnContainer.innerHTML = "";
+    for (const ex of EXAMPLES[cat]) {
+      const btn = document.createElement("button");
+      btn.textContent = ex.label;
+      btn.title = ex.code;
+      btn.addEventListener("click", () => {
+        document.getElementById("codeInput").value = ex.code;
+      });
+      btnContainer.appendChild(btn);
+    }
+  }
 
-function switchTab(tabId) {
-  document.querySelectorAll(".output-tabs button").forEach(b => {
-    b.classList.toggle("active", b.dataset.tab === tabId);
-  });
-  document.querySelectorAll(".tab-content").forEach(tc => {
-    tc.classList.toggle("active", tc.id === tabId);
-  });
-}
-
-function initTabs() {
-  document.querySelectorAll(".output-tabs button").forEach(btn => {
-    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-  });
+  catSelect.addEventListener("change", () => showCategory(catSelect.value));
+  showCategory(Object.keys(EXAMPLES)[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -810,17 +772,14 @@ function initTabs() {
 // ---------------------------------------------------------------------------
 
 function renderMarkdown(md) {
-  // Pre-process: protect code blocks
   const codeBlocks = [];
   md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     codeBlocks.push(`<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`);
     return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
   });
 
-  // Inline code
   md = md.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-  // Tables
   md = md.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)*)/gm, (_, header, sep, body) => {
     const ths = header.split("|").slice(1, -1).map(h => `<th>${h.trim()}</th>`).join("");
     const rows = body.trim().split("\n").map(row => {
@@ -837,7 +796,6 @@ function renderMarkdown(md) {
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
 
-    // Code block placeholder
     const cbMatch = line.match(/^%%CODEBLOCK_(\d+)%%$/);
     if (cbMatch) {
       if (inList) { html += "</ul>"; inList = false; }
@@ -845,33 +803,26 @@ function renderMarkdown(md) {
       continue;
     }
 
-    // Headings
     if (line.startsWith("#### ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h4>${line.slice(5)}</h4>`; continue; }
     if (line.startsWith("### ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h3>${line.slice(4)}</h3>`; continue; }
     if (line.startsWith("## ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h2>${line.slice(3)}</h2>`; continue; }
     if (line.startsWith("# ")) { if (inList) { html += "</ul>"; inList = false; } html += `<h1>${line.slice(2)}</h1>`; continue; }
 
-    // HR
     if (/^---+$/.test(line.trim())) { if (inList) { html += "</ul>"; inList = false; } html += "<hr>"; continue; }
 
-    // List items
     if (/^- /.test(line)) {
       if (!inList) { html += "<ul>"; inList = true; }
       html += `<li>${line.slice(2)}</li>`;
       continue;
     }
 
-    // End list if not a list item
     if (inList && line.trim() === "") { html += "</ul>"; inList = false; continue; }
 
-    // Bold and italic
     line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     line = line.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
-    // Table lines (already handled above in block form) — skip raw table lines
     if (line.startsWith("|")) continue;
 
-    // Paragraphs
     if (line.trim() === "") {
       if (inList) { html += "</ul>"; inList = false; }
       continue;
@@ -883,8 +834,7 @@ function renderMarkdown(md) {
 }
 
 function initDocs() {
-  const md = DOCS_MD;
-  document.getElementById("docsArea").innerHTML = renderMarkdown(md);
+  document.getElementById("docsArea").innerHTML = renderMarkdown(DOCS_MD);
 }
 
 // ---------------------------------------------------------------------------
@@ -893,11 +843,11 @@ function initDocs() {
 
 function initResize() {
   const resizeH = document.getElementById("resizeH");
-  const panelData = document.getElementById("panelData");
+  const panelLeft = document.getElementById("panelLeft");
   let startX, startW;
   resizeH.addEventListener("mousedown", e => {
-    startX = e.clientX; startW = panelData.offsetWidth;
-    const onMove = e2 => { panelData.style.width = Math.max(200, startW + e2.clientX - startX) + "px"; };
+    startX = e.clientX; startW = panelLeft.offsetWidth;
+    const onMove = e2 => { panelLeft.style.width = Math.max(200, startW + e2.clientX - startX) + "px"; };
     const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -943,19 +893,14 @@ document.querySelectorAll("textarea").forEach(ta => {
 // Docs content (embedded markdown)
 // ---------------------------------------------------------------------------
 
-const DOCS_MD = `# tquery: Temporal Query Language for Health Event Data
+const DOCS_MD = `# tquery: Temporal Query Language
 
 ## Quick Start
 
 \`\`\`python
-import tquery
+# df is your event-level DataFrame
+# tquery is auto-imported in the playground
 
-# df is your event-level DataFrame with pid, start_date, and code columns
-result = tquery.tquery(df, 'K50 before K51')
-result.count     # number of matching persons
-result.pids      # set of person IDs
-
-# pandas accessor
 df.tq('K50 before K51').count
 df.tq.count('min 2 of K50')
 \`\`\`
@@ -971,7 +916,7 @@ df.tq.count('min 2 of K50')
 | \`K50\` | Events with code K50 |
 | \`K50, K51, K52\` | Events with any of these codes |
 | \`K50*\` | Wildcard: all codes starting with K50 |
-| \`K50-K53\` | Range: codes from K50 to K53 (alphabetic) |
+| \`K50-K53\` | Range: codes from K50 to K53 |
 | \`@antibiotics\` | Variable: codes from a predefined list |
 
 #### Column Specification
@@ -980,7 +925,7 @@ df.tq.count('min 2 of K50')
 |-----------|---------|
 | \`K50 in icd\` | Search only in the 'icd' column |
 | \`K50 in icd1, icd2\` | Search in multiple named columns |
-| \`K50 in icd*\` | Search in all columns starting with 'icd' |
+| \`K50 in icd*\` | Search in columns matching 'icd*' |
 
 #### Temporal Ordering
 
@@ -994,7 +939,6 @@ df.tq.count('min 2 of K50')
 
 | Expression | Meaning |
 |-----------|---------|
-| \`K50 within 90 days\` | K50 within 90 days of first event |
 | \`K50 within 90 days after K51\` | K50 within 90 days following K51 |
 | \`K50 within 30 days before K51\` | K50 within 30 days preceding K51 |
 | \`K50 between 30 and 90 days after K51\` | K50 between 30-90 days after K51 |
@@ -1006,23 +950,23 @@ df.tq.count('min 2 of K50')
 | \`K50 inside 5 events after K51\` | K50 within next 5 events after K51 |
 | \`K50 outside 10 events before K51\` | K50 not within 10 events before K51 |
 
-#### Quantifiers (Counts)
+#### Quantifiers
 
 | Expression | Meaning |
 |-----------|---------|
-| \`min 2 of K50\` | Persons with at least 2 K50 events |
-| \`max 3 of K50\` | Persons with at most 3 K50 events |
-| \`exactly 1 of K50\` | Persons with exactly 1 K50 event |
-| \`2-5 of K50\` | Persons with 2 to 5 K50 events |
+| \`min 2 of K50\` | At least 2 K50 events |
+| \`max 3 of K50\` | At most 3 K50 events |
+| \`exactly 1 of K50\` | Exactly 1 K50 event |
+| \`2-5 of K50\` | Between 2 and 5 K50 events |
 
-#### Positional Selection
+#### Positional
 
 | Expression | Meaning |
 |-----------|---------|
 | \`1st of K50\` | Only the first K50 event per person |
 | \`2nd of K50\` | Only the second K50 event |
-| \`first 3 of K50\` | The first 3 K50 events per person |
-| \`last 2 of K50\` | The last 2 K50 events per person |
+| \`first 3 of K50\` | The first 3 K50 events |
+| \`last 2 of K50\` | The last 2 K50 events |
 
 #### Logical Operators
 
@@ -1043,14 +987,11 @@ df.tq.count('min 2 of K50')
 
 ### Compound Expressions
 
-Expressions combine freely with parentheses:
-
 \`\`\`python
 '(K50 or K51) before K52'
 'min 2 of glucose>8 within 60 days'
 '1st of K50 before 1st of K51'
 '(min 2 of K50) and (K51 before K52)'
-'not K52 and K50 before K51'
 \`\`\`
 
 ### Operator Precedence (low to high)
@@ -1059,15 +1000,13 @@ Expressions combine freely with parentheses:
 2. \`and\`
 3. \`before\` / \`after\` / \`simultaneously\`
 4. \`not\`
-5. \`min\` / \`max\` / \`exactly\` / ordinals / \`first\` / \`last\`
+5. \`min\` / \`max\` / \`exactly\` / ordinals
 6. \`within\` / \`between\` / \`inside\` / \`outside\`
-7. Atoms (codes, comparisons, parenthesized sub-expressions)
+7. Atoms (codes, comparisons, parenthesized groups)
 
 ---
 
 ## Results
-
-Every query returns a \`TQueryResult\`:
 
 \`\`\`python
 result = df.tq('K50 before K51')
@@ -1086,12 +1025,8 @@ result.filter('rows') # DataFrame: only matching rows
 ## Parameterized Queries
 
 \`\`\`python
-tquery.multi_query(df, 'K5?[0,1,2] before K51')
-# K50 before K51    234
-# K51 before K51      0
-# K52 before K51     89
-
-tquery.multi_query(df, 'K50 within ?[30,60,90] days after K51')
+multi_query(df, 'K5?[0,1,2] before K51')
+multi_query(df, 'K50 within ?[30,60,90] days after K51')
 \`\`\`
 
 | Syntax | Expands to |
@@ -1103,64 +1038,25 @@ tquery.multi_query(df, 'K50 within ?[30,60,90] days after K51')
 
 ---
 
-## Treatment Pattern Strings
-
-### stringify_order - Event order
+## Treatment Patterns
 
 \`\`\`python
 codes = {'i': ['L04AB02'], 'a': ['L04AB04'], 'g': ['L04AB06']}
-tquery.stringify_order(df, codes, cols='atc')
-# pid
-# 1    iiaga
-# 2    aig
+stringify_order(df, codes, cols='atc')
+# pid 1: iiaga
+# pid 2: aig
 \`\`\`
-
-Options: \`keep_repeats=False\` (remove consecutive repeats), \`only_unique=True\` (first of each).
-
-### stringify_time - Time-positioned
-
-\`\`\`python
-tquery.stringify_time(df, codes, cols='atc', step=90)
-# Each character position = 90-day period
-\`\`\`
-
-### stringify_durations - Duration-filled
-
-\`\`\`python
-tquery.stringify_durations(df, codes, cols='atc', event_duration='days', step=30)
-# Events fill their entire duration
-\`\`\`
-
----
-
-## Cross-Validation (String Evaluator)
-
-Test whether query logic is correct by evaluating the same expression against stringify output:
-
-\`\`\`python
-from tquery import cross_validate
-
-codes = {"i": ["L04AB02"], "a": ["L04AB04"]}
-
-# Returns (df_pids, string_pids, match)
-df_pids, str_pids, match = cross_validate(
-    df, "L04AB02 before L04AB04", codes, cols="atc"
-)
-assert match  # True if both evaluators agree
-\`\`\`
-
-Also available: \`string_query()\` and \`string_query_auto()\`.
 
 ---
 
 ## Codebooks
 
 \`\`\`python
-tquery.get_label('K50')       # 'Diseases of the digestive system'
-tquery.get_label('L04AB02')   # 'Infliximab'
-tquery.search_codes('diabetes')
-df.tq.labels(cols='icd')      # Adds label columns
-df.tq.count_codes(cols='icd') # Code frequency table
+get_label('K50')          # 'Diseases of the digestive system'
+get_label('L04AB02')      # 'Infliximab'
+search_codes('diabetes')  # matching codes table
+df.tq.labels(cols='icd')  # add label columns
+df.tq.count_codes()       # code frequency table
 \`\`\`
 
 ---
@@ -1168,15 +1064,13 @@ df.tq.count_codes(cols='icd') # Code frequency table
 ## Configuration
 
 \`\`\`python
-from tquery import TQueryConfig, use
-
 hospital = TQueryConfig(
     pid='pasient_id',
     date='inn_dato',
     cols=['hoved', 'bi1', 'bi2'],
     name='Hospital',
 )
-tquery.use(hospital)
+use(hospital)
 df.tq('K50 before K51').count
 \`\`\`
 
@@ -1187,26 +1081,6 @@ df.tq('K50 before K51').count
 | \`cols\` | \`None\` | Code columns (None = auto) |
 | \`sep\` | \`None\` | Multi-value separator |
 | \`variables\` | \`None\` | @variable code lists |
-
----
-
-## Medical Query Examples
-
-\`\`\`python
-# Cardiology
-df.tq('C10AA within 90 days after I21').count   # statin after MI
-df.tq('I50 within 30 days after I50').count     # HF readmission
-
-# Diabetes
-df.tq('A10BA02 before A10AE').count             # metformin before insulin
-
-# IBD
-df.tq('L04AB02 before A07EC02').count           # biologic before 5-ASA
-df.tq('min 3 of H02AB06 within 365 days').count # steroid-dependent
-
-# Antibiotics
-df.tq('A047 within 60 days after J01').count    # C. diff after antibiotics
-\`\`\`
 
 ---
 
@@ -1229,12 +1103,11 @@ Sort by (pid, date) for best performance. Multi-value cells supported with \`sep
 
 document.getElementById("btnRun").addEventListener("click", runCode);
 document.getElementById("btnClear").addEventListener("click", () => showOutput(""));
-document.getElementById("btnToggleCsv").addEventListener("click", toggleCsv);
 
-initDatasetTabs();
+initDatasetSelect();
 initUpload();
 initExamples();
-initTabs();
+initLeftTabs();
 initDocs();
 initResize();
 
