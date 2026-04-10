@@ -18,13 +18,26 @@ from tquery._codebook import (
 )
 from tquery._codes import extract_codes
 from tquery._evaluator import Evaluator
+from tquery._incidence import (
+    fit_decay,
+    incidence,
+    raw_incidence,
+    singles_pattern,
+    washout_pattern,
+)
 from tquery._parser import parse
+from tquery._string_evaluator import (
+    cross_validate,
+    string_query,
+    string_query_auto,
+)
 from tquery._stringify import stringify_durations, stringify_order, stringify_time
 from tquery._types import (
     TQueryCodeError,
     TQueryColumnError,
     TQueryConfig,
     TQueryResult,
+    TQueryStringError,
     TQuerySyntaxError,
     _merge_kwargs,
     get_config,
@@ -39,16 +52,25 @@ __all__ = [
     "stringify_order",
     "stringify_time",
     "stringify_durations",
+    "string_query",
+    "string_query_auto",
+    "cross_validate",
     "extract_codes",
     "count_codes",
     "search_codes",
     "get_label",
     "get_codebook",
+    "raw_incidence",
+    "washout_pattern",
+    "singles_pattern",
+    "fit_decay",
+    "incidence",
     "TQueryConfig",
     "TQueryResult",
     "TQuerySyntaxError",
     "TQueryColumnError",
     "TQueryCodeError",
+    "TQueryStringError",
     "use",
     "get_config",
 ]
@@ -92,7 +114,7 @@ def tquery(
     ast = parse(expr)
     evaluator = Evaluator(df, **eval_kw)
     row_mask = evaluator.evaluate(ast)
-    return TQueryResult(row_mask, df, kw["pid"])
+    return TQueryResult(row_mask, df, kw["pid"], ast=ast, evaluator=evaluator)
 
 
 def count_persons(
@@ -315,11 +337,39 @@ class TQueryAccessor:
     def count(self, expr: str, **kwargs: Any) -> int:
         return count_persons(self._df, expr, **kwargs)
 
+    def pct(self, expr: str, dropna: bool = True, **kwargs: Any) -> float:
+        """Percentage of persons matching the expression, in 0..100.
+
+        Args:
+            expr: A tquery expression.
+            dropna: If True (default), denominator excludes persons for
+                whom the query is undefined (i.e. those missing the
+                events being compared in a temporal subexpression). If
+                False, denominator is the total number of persons.
+        """
+        return tquery(self._df, expr, **kwargs).pct(dropna=dropna)
+
     def multi(self, template: str, **kwargs: Any) -> pd.Series:
         return multi_query(self._df, template, **kwargs)
 
     def event_counts(self, expr: str, **kwargs: Any) -> pd.Series:
         return event_counts(self._df, expr, **kwargs)
+
+    def raw_incidence(self, expr: str | None = None, **kwargs: Any) -> pd.Series:
+        return raw_incidence(self._df, expr, **kwargs)
+
+    def incidence(self, expr: str | None = None, **kwargs: Any) -> pd.Series:
+        return incidence(self._df, expr, **kwargs)
+
+    def washout_pattern(
+        self, expr: str | None = None, **kwargs: Any,
+    ) -> pd.Series | pd.DataFrame:
+        return washout_pattern(self._df, expr, **kwargs)
+
+    def singles_pattern(
+        self, expr: str | None = None, **kwargs: Any,
+    ) -> pd.Series | pd.DataFrame:
+        return singles_pattern(self._df, expr, **kwargs)
 
     def labels(self, cols: str | list[str] | None = None) -> pd.DataFrame:
         """Add label columns next to code columns in the DataFrame.
@@ -398,3 +448,15 @@ class TQueryAccessor:
         kw.setdefault("event_start", kw.pop("date", "start_date"))
         kw.pop("variables", None)
         return stringify_durations(self._df, codes, **kw)
+
+    def cross_validate(
+        self,
+        expr: str,
+        codes: dict,
+        **kwargs: Any,
+    ) -> tuple[set, set, bool]:
+        """Cross-validate DataFrame vs string evaluator results.
+
+        Returns (df_pids, string_pids, match).
+        """
+        return cross_validate(self._df, expr, codes, **kwargs)

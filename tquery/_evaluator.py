@@ -20,6 +20,7 @@ from tquery._ast import (
     InsideExpr,
     NotExpr,
     PrefixExpr,
+    Quantifier,
     RangePrefixExpr,
     TemporalExpr,
     WithinExpr,
@@ -44,6 +45,17 @@ _OPS = {
     "==": operator.eq,
     "!=": operator.ne,
 }
+
+
+def _unwrap_quantifier(node: ASTNode) -> tuple[ASTNode, bool]:
+    """Strip a `Quantifier` wrapper, returning (inner, is_every).
+
+    For non-Quantifier nodes (or `any`-elided ones, which the parser already
+    flattens), returns (node, False).
+    """
+    if isinstance(node, Quantifier):
+        return node.child, node.kind == "every"
+    return node, False
 
 
 class Evaluator:
@@ -120,6 +132,13 @@ class Evaluator:
             return self._eval_within(node)
         elif isinstance(node, InsideExpr):
             return self._eval_inside(node)
+        elif isinstance(node, Quantifier):
+            # Quantifier is consumed by its parent temporal/within node.
+            # Reaching here means it appeared outside a valid context.
+            raise TypeError(
+                f"'{node.kind}' quantifier must appear inside a temporal "
+                f"or 'within ... days' expression"
+            )
         else:
             raise TypeError(f"Unknown AST node type: {type(node)}")
 
@@ -194,18 +213,28 @@ class Evaluator:
         return pid.isin(matching_pids) & (left | right)
 
     def _eval_temporal(self, node: TemporalExpr) -> pd.Series:
-        left_mask = self.evaluate(node.left)
-        right_mask = self.evaluate(node.right)
+        left_node, every_left = _unwrap_quantifier(node.left)
+        right_node, every_right = _unwrap_quantifier(node.right)
+        left_mask = self.evaluate(left_node)
+        right_mask = self.evaluate(right_node)
         return eval_before_after(
-            self.df, left_mask, right_mask, node.op, self.pid, self.date
+            self.df, left_mask, right_mask, node.op, self.pid, self.date,
+            every_left=every_left, every_right=every_right,
         )
 
     def _eval_within(self, node: WithinExpr) -> pd.Series:
-        child_mask = self.evaluate(node.child)
-        ref_mask = self.evaluate(node.ref) if node.ref is not None else None
+        child_node, every_left = _unwrap_quantifier(node.child)
+        if node.ref is not None:
+            ref_node, every_right = _unwrap_quantifier(node.ref)
+            ref_mask = self.evaluate(ref_node)
+        else:
+            every_right = False
+            ref_mask = None
+        child_mask = self.evaluate(child_node)
         return eval_within_days(
             self.df, child_mask, ref_mask, node.days, node.direction,
             self.pid, self.date, min_days=node.min_days,
+            every_left=every_left, every_right=every_right,
         )
 
     def _eval_inside(self, node: InsideExpr) -> pd.Series:
@@ -215,3 +244,90 @@ class Evaluator:
             self.df, child_mask, ref_mask, node.inside, node.n_events,
             node.direction, self.pid
         )
+
+    # ------------------------------------------------------------------
+    # Evaluable / "missing" analysis
+    # ------------------------------------------------------------------
+
+    def evaluable_pids(self, node: ASTNode) -> set:
+        """Return the set of pids for which `node` has a defined answer.
+
+        A person is considered "missing" (excluded from the evaluable set)
+        if the query is *undefined* for them, not merely false. The only
+        constructs that introduce undefinedness are the comparative ones
+        — temporal/within/inside expressions — which require events on
+        both sides to be answerable. Logical operators propagate this:
+        AND intersects evaluable sets, OR unions them. CodeAtoms,
+        comparisons, prefixes and `not` are well-defined for everyone.
+        """
+        all_pids = set(self.df[self.pid].unique())
+        return self._evaluable_walk(node, all_pids)
+
+    def _evaluable_walk(self, node: ASTNode, all_pids: set) -> set:
+        if isinstance(node, (CodeAtom, ComparisonAtom)):
+            return all_pids
+        if isinstance(node, NotExpr):
+            # `not X` is two-valued in the existing evaluator: persons absent
+            # from X are *included* in the result (treated as not-matching).
+            # That makes the negation well-defined for everyone, so the
+            # evaluable set widens to all persons. If users want the strict
+            # conditional reading, they should write the positive form
+            # rather than negating a comparative subexpression.
+            return all_pids
+        if isinstance(node, (PrefixExpr, RangePrefixExpr)):
+            return self._evaluable_walk(node.child, all_pids)
+        if isinstance(node, Quantifier):
+            # `every X` is undefined for persons with no X events
+            # (vacuous-truth rule excludes them from being True);
+            # `any X` is well-defined for everyone.
+            if node.kind == "every":
+                return self._pids_with_events(node.child)
+            return self._evaluable_walk(node.child, all_pids)
+        if isinstance(node, BinaryLogical):
+            left = self._evaluable_walk(node.left, all_pids)
+            right = self._evaluable_walk(node.right, all_pids)
+            return left & right if node.op == "and" else left | right
+        if isinstance(node, TemporalExpr):
+            left_inner, _ = _unwrap_quantifier(node.left)
+            right_inner, _ = _unwrap_quantifier(node.right)
+            left_eval = self._evaluable_walk(node.left, all_pids)
+            right_eval = self._evaluable_walk(node.right, all_pids)
+            return (
+                left_eval
+                & right_eval
+                & self._pids_with_events(left_inner)
+                & self._pids_with_events(right_inner)
+            )
+        if isinstance(node, WithinExpr):
+            child_inner, _ = _unwrap_quantifier(node.child)
+            child_eval = self._evaluable_walk(node.child, all_pids)
+            result = child_eval & self._pids_with_events(child_inner)
+            if node.ref is not None:
+                ref_inner, _ = _unwrap_quantifier(node.ref)
+                result = (
+                    result
+                    & self._evaluable_walk(node.ref, all_pids)
+                    & self._pids_with_events(ref_inner)
+                )
+            return result
+        if isinstance(node, InsideExpr):
+            child_eval = self._evaluable_walk(node.child, all_pids)
+            ref_eval = self._evaluable_walk(node.ref, all_pids)
+            return (
+                child_eval
+                & ref_eval
+                & self._pids_with_events(node.child)
+                & self._pids_with_events(node.ref)
+            )
+        return all_pids
+
+    def _pids_with_events(self, node: ASTNode) -> set:
+        """Return the set of pids that have at least one row matching `node`.
+
+        Re-uses the eval cache, so this is essentially free if the node
+        was already evaluated as part of the main query.
+        """
+        mask = self.evaluate(node)
+        if not mask.any():
+            return set()
+        return set(self.df.loc[mask, self.pid].unique())

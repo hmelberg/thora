@@ -20,6 +20,7 @@ from tquery._ast import (
     InsideExpr,
     NotExpr,
     PrefixExpr,
+    Quantifier,
     RangePrefixExpr,
     TemporalExpr,
     WithinExpr,
@@ -58,6 +59,7 @@ KEYWORDS = frozenset({
     "first", "last",
     "days", "events",
     "around",
+    "every", "any",
 })
 
 # Keywords that are also valid as direction modifiers inside within/inside clauses
@@ -235,12 +237,57 @@ class Parser:
         return left
 
     def _parse_temporal(self) -> ASTNode:
-        left = self._parse_not()
+        lhs_q = self._try_quantified()
+        left = lhs_q if lhs_q is not None else self._parse_not()
         if self._at_keyword("before", "after", "simultaneously"):
             op = self._advance().value
-            right = self._parse_not()
+            rhs_q = self._try_quantified()
+            right = rhs_q if rhs_q is not None else self._parse_not()
             return TemporalExpr(op, left, right)
+        if isinstance(left, Quantifier):
+            raise self._error(
+                f"'{left.kind}' requires a temporal operator (before/after/simultaneously)"
+            )
         return left
+
+    def _try_quantified(self) -> ASTNode | None:
+        """Try to parse an `every`/`any` quantifier followed by a code atom.
+
+        Returns:
+            - `Quantifier(every, CodeAtom(...))` for `every K50`
+            - A `WithinExpr`/`InsideExpr` with quantified child if a window
+              follows (e.g. `every K50 within 100 days after K51`)
+            - `CodeAtom(...)` for `any K50` (the `any` is elided as a no-op)
+            - `None` if no quantifier keyword is present (caller falls back)
+
+        `every`/`any` may only precede a bare code expression. Combinations
+        with parentheses, counting prefixes, or `not` are rejected.
+        """
+        if not self._at_keyword("every", "any"):
+            return None
+        kind = self._advance().value
+        tok = self._peek()
+        if tok.type == TokenType.LPAREN:
+            raise self._error(
+                f"'{kind}' cannot be applied to a parenthesized group"
+            )
+        if tok.type == TokenType.KEYWORD and tok.value in (
+            "min", "max", "exactly", "first", "last", "not",
+        ):
+            raise self._error(
+                f"'{kind}' cannot be combined with '{tok.value}'"
+            )
+        if tok.type == TokenType.INT_RANGE or tok.type == TokenType.ORDINAL:
+            raise self._error(
+                f"'{kind}' cannot be combined with a count prefix"
+            )
+        atom = self._parse_code_expr()
+        wrapped = atom if kind == "any" else Quantifier(kind="every", child=atom)
+        # If a within/inside window follows, attach it to the quantified atom
+        # so the AST shape is WithinExpr(child=Quantifier(...), ...).
+        if self._at_keyword("within", "between", "inside", "outside"):
+            return self._parse_within(child=wrapped)
+        return wrapped
 
     def _parse_not(self) -> ASTNode:
         if self._at_keyword("not"):
@@ -292,8 +339,9 @@ class Parser:
 
         return self._parse_within()
 
-    def _parse_within(self) -> ASTNode:
-        child = self._parse_atom()
+    def _parse_within(self, child: ASTNode | None = None) -> ASTNode:
+        if child is None:
+            child = self._parse_atom()
         if self._at_keyword("within", "between"):
             keyword = self._advance().value
 
@@ -323,7 +371,8 @@ class Parser:
                 direction = self._advance().value
                 if self._at_keyword("of"):
                     self._advance()
-                ref = self._parse_prefix()
+                rhs_q = self._try_quantified()
+                ref = rhs_q if rhs_q is not None else self._parse_prefix()
 
             return WithinExpr(child, max_days, min_days, direction, ref)
 
@@ -338,7 +387,8 @@ class Parser:
             direction_tok = self._expect_keyword("before", "after", "around")
             if self._at_keyword("of"):
                 self._advance()
-            ref = self._parse_prefix()
+            rhs_q = self._try_quantified()
+            ref = rhs_q if rhs_q is not None else self._parse_prefix()
             return InsideExpr(child, inside, n_events, direction_tok.value, ref)
 
         return child

@@ -93,6 +93,19 @@ class InsideExpr:
     ref: ASTNode
 
 
+@dataclass(frozen=True, slots=True)
+class Quantifier:
+    """Universal or existential quantifier over an atom in a temporal context.
+
+    kind='any' is the default existential and is semantically a no-op — the
+    parser elides it. kind='every' is universal: the surrounding temporal
+    or within predicate must hold for ALL events of the child atom, AND the
+    child must be non-empty for the person (no vacuous truth).
+    """
+    kind: str  # 'any' | 'every'
+    child: ASTNode  # always a CodeAtom (enforced at parse time)
+
+
 # Union type for all AST nodes
 ASTNode = Union[
     CodeAtom,
@@ -104,4 +117,5 @@ ASTNode = Union[
     TemporalExpr,
     WithinExpr,
     InsideExpr,
+    Quantifier,
 ]

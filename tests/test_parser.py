@@ -9,6 +9,7 @@ from tquery._ast import (
     InsideExpr,
     NotExpr,
     PrefixExpr,
+    Quantifier,
     TemporalExpr,
     WithinExpr,
 )
@@ -382,3 +383,80 @@ class TestParserErrors:
     def test_trailing_tokens(self):
         with pytest.raises(TQuerySyntaxError, match="Unexpected token"):
             parse("K50 K51")
+
+
+# ---------------------------------------------------------------------------
+# Parser tests — every / any quantifiers
+# ---------------------------------------------------------------------------
+
+class TestParserQuantifiers:
+    def test_every_on_left(self):
+        ast = parse("every K50 after K51")
+        assert isinstance(ast, TemporalExpr)
+        assert ast.op == "after"
+        assert isinstance(ast.left, Quantifier)
+        assert ast.left.kind == "every"
+        assert isinstance(ast.left.child, CodeAtom)
+        assert ast.left.child.codes == ("K50",)
+        assert isinstance(ast.right, CodeAtom)
+
+    def test_every_on_right(self):
+        ast = parse("K50 after every K51")
+        assert isinstance(ast, TemporalExpr)
+        assert isinstance(ast.left, CodeAtom)
+        assert isinstance(ast.right, Quantifier)
+        assert ast.right.kind == "every"
+
+    def test_every_on_both(self):
+        ast = parse("every K50 before every K51")
+        assert isinstance(ast, TemporalExpr)
+        assert ast.op == "before"
+        assert isinstance(ast.left, Quantifier)
+        assert isinstance(ast.right, Quantifier)
+
+    def test_any_is_elided(self):
+        # `any K50 after any K51` is structurally identical to `K50 after K51`
+        ast = parse("any K50 after any K51")
+        assert isinstance(ast, TemporalExpr)
+        assert isinstance(ast.left, CodeAtom)
+        assert isinstance(ast.right, CodeAtom)
+
+    def test_every_on_within_ref(self):
+        ast = parse("K50 within 100 days after every K51")
+        assert isinstance(ast, WithinExpr)
+        assert ast.days == 100
+        assert ast.direction == "after"
+        assert isinstance(ast.ref, Quantifier)
+        assert ast.ref.kind == "every"
+
+    def test_every_simultaneously(self):
+        ast = parse("every K50 simultaneously K51")
+        assert isinstance(ast, TemporalExpr)
+        assert ast.op == "simultaneously"
+        assert isinstance(ast.left, Quantifier)
+
+    def test_every_without_temporal_op_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="requires a temporal operator"):
+            parse("every K50")
+
+    def test_every_with_paren_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="parenthesized group"):
+            parse("every (K50 or K51) after K52")
+
+    def test_every_with_min_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="cannot be combined with 'min'"):
+            parse("every min 2 of K50 after K51")
+
+    def test_every_with_not_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="cannot be combined with 'not'"):
+            parse("every not K50 after K51")
+
+    def test_any_with_paren_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="parenthesized group"):
+            parse("any (K50 or K51) after K52")
+
+    def test_every_with_variable(self):
+        ast = parse("K50 after every @cohort")
+        assert isinstance(ast, TemporalExpr)
+        assert isinstance(ast.right, Quantifier)
+        assert ast.right.child.codes == ("@cohort",)

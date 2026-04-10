@@ -127,6 +127,16 @@ df.tq('K50 and K52').pids           # {1, 2}
 | `first 3 of K50` | The first 3 K50 events per person |
 | `last 2 of K50` | The last 2 K50 events per person |
 
+#### Universal / Existential Quantifiers
+
+| Expression | Meaning |
+|-----------|---------|
+| `any K50 after K51` | Default — same as `K50 after K51` (sugar) |
+| `K50 after every K51` | Every K51 has a K50 after it (and K51 non-empty) |
+| `every K50 before K51` | Every K50 has a K51 after it |
+| `every K50 after every K51` | All K50s strictly follow all K51s |
+| `K50 within 100 days after every K51` | Every K51 followed by a K50 within 100 days |
+
 #### Logical Operators
 
 | Expression | Meaning |
@@ -167,6 +177,48 @@ Expressions can be freely combined using parentheses:
 
 # Statin within 30-365 days after MI (washout period)
 'C10AA between 30 and 365 days after I21'
+```
+
+### Quantifiers: `every` and `any`
+
+By default, temporal queries are existential — `K50 after K51` matches a person if there is *some* K50 that occurs after *some* K51. To express universal claims like "every K51 is followed by a K50 within 100 days", prefix the relevant atom with `every`. The dual `any` is the explicit form of the default and is purely sugar.
+
+```python
+# Every diagnosis K51 is followed by a treatment K50 within 100 days
+'K50 within 100 days after every K51'
+
+# Every K50 the patient has is preceded by a K51 within 30 days (e.g. every
+# control visit was after a recent prescription)
+'every K50 within 30 days after K51'
+
+# All K50s strictly follow all K51s — no overlap, K51s came first
+'every K50 after every K51'
+
+# Explicit form of the default — semantically identical to `K50 after K51`
+'any K50 after any K51'
+```
+
+**Vacuous truth is excluded.** `every K51 ...` requires the person to have at least one K51 event. A patient with zero K51s does *not* satisfy `K50 after every K51`.
+
+**Restrictions.** `every`/`any` may only precede a bare code expression or `@variable`. They cannot be combined with parentheses, counting prefixes (`min`/`max`/`exactly`/`first`/`last`/ordinals), or `not`. They also require a surrounding temporal context — `every K50` on its own is a syntax error.
+
+**Equivalences with the existing default.** Because the historical default for `K50 before K51` already enforces "the first K50 precedes every K51" (i.e. `min(K50) < min(K51)`), adding `every K51` on the *right* of `before` is a no-op. By symmetry, `every K50 after K51` equals the default. The non-redundant additions are:
+
+| Query | Adds |
+|---|---|
+| `every K50 before K51` | `max(K50) < max(K51)` — every K50 has some K51 after it |
+| `K50 after every K51`  | `max(K50) > max(K51)` — every K51 has some K50 after it |
+| `every K50 before every K51` | `max(K50) < min(K51)` — strict total separation |
+| `every K50 after every K51`  | `min(K50) > max(K51)` — strict total separation |
+
+Inside a time window, the universal reading on either side adds real constraints regardless of direction:
+
+```python
+# Every K51 is followed by a K50 within 100 days (cohort coverage check)
+'K50 within 100 days after every K51'
+
+# Every K50 has a K51 in the 100 days before it (every event is "explained")
+'every K50 within 100 days after K51'
 ```
 
 ### Operator Precedence
@@ -224,13 +276,52 @@ Every query returns a `TQueryResult` with multiple views:
 result = df.tq('K50 before K51')
 
 result.count          # int: number of matching persons
+result.total          # int: total persons in the DataFrame
+result.evaluable      # int: persons for whom the query is well-defined
+result.pct()          # float: count / evaluable * 100 (default)
+result.pct(dropna=False)  # float: count / total * 100
 result.pids           # set: {1, 3, 7, ...}
+result.evaluable_pids # set: persons in the denominator under dropna=True
 result.persons        # Series: pid → True/False
 result.rows           # Series: row-level boolean mask
 result.event_counts   # Series: pid → number of matching events
 result.filter()       # DataFrame: all rows for matching persons
 result.filter('rows') # DataFrame: only the matching rows
 ```
+
+### Counting and Proportions: `count`, `pct`, and "missing"
+
+For temporal queries the most common follow-up question is *what fraction*. There are two natural denominators, and they often differ by an order of magnitude:
+
+```python
+# Out of 100 patients in the cohort, 2 had K50 before K51.
+# Out of 17 patients with both K50 and K51, 2 had K50 first.
+
+result = df.tq('K50 before K51')
+result.count             # 2
+result.evaluable         # 17  — patients with both diagnoses
+result.total             # 100 — all patients in df
+result.pct()             # 11.8 — conditional: of those evaluable
+result.pct(dropna=False) # 2.0  — marginal: of all patients
+```
+
+The default `pct()` mirrors pandas' `dropna=True` convention: persons for whom the query is *undefined* (not merely false) are excluded from the denominator. A person is "missing" only if they lack one of the events being compared in a temporal/within/inside subexpression. For non-comparative queries (`K50`, `min 2 of K51`, `K50 and K51`), every person is evaluable, so `pct()` and `pct(dropna=False)` return the same number.
+
+The `dropna=False` form gives the marginal percentage — useful for prevalence-style questions ("what fraction of the whole cohort experienced this pattern"). The default `dropna=True` gives the conditional percentage — usually the more clinically interesting reading ("among patients eligible for the comparison, what fraction matched").
+
+The accessor mirrors `count`:
+
+```python
+df.tq.count('K50 before K51')              # 2
+df.tq.pct('K50 before K51')                # 11.8 — default conditional
+df.tq.pct('K50 before K51', dropna=False)  # 2.0  — marginal
+```
+
+**Notes on edge cases:**
+
+- If `evaluable == 0` (no person could even be evaluated), `pct()` returns `0.0`, not `NaN` or an exception.
+- Wrapping a comparative subexpression in `not` (`not (K50 before K51)`) widens the evaluable set to all persons, because the existing `not` operator collapses "undefined" to True. If you want the strict conditional reading, write the positive form (`K51 before K50`) instead.
+- `every X` requires X to be non-empty for the answer to be defined, so its evaluable set excludes persons with no X events.
 
 ### Shorthand Functions
 
@@ -505,6 +596,52 @@ tquery.stringify_durations(df, codes, cols='atc',
 # 1    i|i|i|a|a| |g    (infliximab for 3 periods, adalimumab for 2, ...)
 ```
 
+### Querying Stringified Output
+
+The output of `stringify_order`, `stringify_time`, and `stringify_durations` can itself be queried with tquery expressions via `string_query`, `string_query_auto`, and `cross_validate`. This lets you ask temporal questions about *patterns* of events rather than the underlying rows.
+
+Queries reference the original codes (e.g. `L04AB02`); the `codes` dict maps each code to a single-character label used internally in the string representation.
+
+```python
+import tquery as tq
+
+codes = {"i": ["L04AB02"], "a": ["L04AB04"], "g": ["L04AB06"]}
+
+# 1. Auto-stringify and query in one call
+pids = tq.string_query_auto(
+    df, "L04AB02 before L04AB04", codes, mode="order", cols="atc",
+)
+# pids: set of person IDs whose pattern shows infliximab before adalimumab
+
+# 2. Or query a pre-computed string Series
+strings = tq.stringify_order(df, codes, event_start="start_date", cols="atc")
+# strings: pid → 'iiai' / 'aig' / ...
+pids = tq.string_query(
+    "min 2 of L04AB02 before L04AB04", strings, codes, mode="order",
+)
+
+# 3. Cross-validate the DataFrame and string evaluators agree
+df_pids, str_pids, match = tq.cross_validate(
+    df, "L04AB02 before L04AB04", codes, mode="order", cols="atc",
+)
+assert match  # both evaluators returned the same set
+
+# Same via the accessor
+df_pids, str_pids, match = df.tq.cross_validate(
+    "L04AB02 before L04AB04", codes, mode="order", cols="atc",
+)
+```
+
+Three modes mirror the three stringify functions:
+
+| Mode | Backed by | Use when |
+|---|---|---|
+| `"order"` | `stringify_order` | You only care about the *sequence* of events (ignore exact dates) |
+| `"time"` | `stringify_time` | You want fixed time-step buckets (e.g. one slot per 90 days) |
+| `"durations"` | `stringify_durations` | Events have durations and fill multiple slots |
+
+The string evaluator supports the full query language — wildcards, prefixes (`min N of`, `1st of`, …), `before`/`after`, `within N days`, `not`/`and`/`or` — but operates on the per-person string representation rather than raw rows. `cross_validate` lets you sanity-check both evaluators against each other on the same query.
+
 ### String Manipulation Helpers
 
 ```python
@@ -522,6 +659,215 @@ shorten(series, agg=3)    # aggregate every 3 positions into 1
 # Pad to uniform length
 left_justify(series)      # right-pad all strings to max length
 ```
+
+---
+
+## Incidence Calculation
+
+Counting *new* disease cases per year from register data is harder than
+it looks. Two systematic biases distort the naive count:
+
+- **Left-censoring (washout bias)** — patients whose disease started
+  before the data window opens look like new cases in the early years.
+  The earlier the year, the worse the inflation.
+- **Right-censoring (forward bias)** — under a "≥N events" case
+  definition, recent single-event patients haven't yet had time to
+  accumulate the events needed to confirm a diagnosis. The latest
+  years are systematically under-counted.
+
+tquery offers three layers of incidence calculation, from naive to
+fully bias-corrected.
+
+### Naive: `raw_incidence`
+
+Count first events per person per year, optionally requiring at least
+N matching events overall before counting:
+
+```python
+import tquery as tq
+
+# All persons whose first K50 falls in each year
+tq.raw_incidence(df, "K50")
+
+# Only persons with >=2 K50 events count
+tq.raw_incidence(df, "K50", required_events=2)
+
+# Same via the accessor
+df.tq.raw_incidence("K50")
+```
+
+The result is a Series indexed by year.
+
+### Empirical patterns: `washout_pattern` and `singles_pattern`
+
+Inspect the bias before correcting it. `washout_pattern` shows how the
+"new case" count for a year decays as more historical data is added:
+
+```python
+# How does 2018's count fall as the lookback window grows?
+tq.washout_pattern(df, "K50", year=2018, step_days=200, pct=True)
+# A Series indexed by lookback days, decaying from 1.0 to the
+# fraction that are *truly* new in 2018.
+
+# All years at once -> DataFrame, columns = years, index = lookback days
+patterns = tq.washout_pattern(df, "K50", step_days=365, pct=True)
+patterns.plot()  # visual sanity check
+```
+
+`singles_pattern` is the symmetric forward analogue, used when the case
+definition requires multiple events. It tracks how many in-year
+"singletons" (persons with fewer than `required_events` events that
+year) remain singletons as the observation window is expanded both
+backward and forward:
+
+```python
+tq.singles_pattern(
+    df, "K50",
+    year=2015,
+    required_events=2,
+    step_days=200,
+    pct=True,
+)
+```
+
+### Bias-corrected: `incidence`
+
+The master function combines `raw_incidence` with washout and forward
+corrections:
+
+```python
+# Default: functional washout, automatic lookahead
+tq.incidence(df, "K50", required_events=2)
+
+# Explicit options
+tq.incidence(
+    df, "K50",
+    required_events=2,
+    washout="functional",   # 'none' | 'historical' | 'functional'
+    lookahead="functional", # 'none' | 'historical' | 'functional' | 'auto'
+    model="exponential",    # exponential | hyperbolic | rational
+    step_days=365,
+)
+
+# Same via accessor
+df.tq.incidence("K50", required_events=2)
+```
+
+The functional washout fits a parametric decay curve to the empirical
+washout pattern (averaged across years) and divides each year's count
+by the decay value at that year's available lookback, then rescales to
+the asymptote. The functional forward correction fits a similar curve
+to `singles_pattern` and subtracts the estimated true-singleton
+contribution.
+
+`lookahead='auto'` (the default) enables the forward correction iff
+`required_events >= 2`.
+
+#### Worked example
+
+```python
+import tquery as tq
+from tests._synthetic import make_data
+
+# Synthetic cohort: 200 truly-new persons per year, 2000-2020.
+# Restrict to a 2010-2019 observation window — both ends are biased.
+df = make_data(n_per_cohort=200, start_year=2000, end_year=2020,
+               cohort_duration=10, seed=0)
+sample = df[(df["date"].dt.year >= 2010) & (df["date"].dt.year <= 2019)]
+
+tq.raw_incidence(sample, date="date")
+# 2010    950   <- inflated by left-censoring
+# 2011    573
+# 2012    387
+# ...
+# 2019    200
+
+tq.incidence(sample, date="date",
+             washout="functional", lookahead="none")
+# 2010    198.0  <- close to the true 200
+# 2011    202.8
+# ...
+# 2019    199.0
+```
+
+### Choosing the adjustment method and model
+
+`incidence` exposes three knobs: `washout`, `lookahead`, and `model`.
+The defaults — **`washout='functional'`**, **`lookahead='auto'`**,
+**`model='exponential'`** — are deliberate.
+
+**Why `functional` over `historical`?** The historical approach uses the
+empirical mean decay directly with no smoothing. That sounds attractive
+because it makes no shape assumption, but every (year, lookback-step)
+cell in `washout_pattern` is a small-N estimate, so the mean decay
+wiggles non-monotonically and the wiggles propagate straight into the
+corrected counts. The functional approach fits a smooth, monotone
+parametric curve over the same points, which strongly stabilises the
+correction in the regime where the empirical estimate is noisy. Use
+`washout='historical'` only as a sanity check — overlay it against
+the fitted curve and look for systematic departure.
+
+**Why `exponential` over `hyperbolic` / `rational`?** The exponential
+form `a + (1-a) * exp(-b*x/365.25)` has only two parameters, decays
+monotonically from 1 to the asymptote `a`, and corresponds to a
+constant per-day "wash-in" rate — the cleanest assumption for a
+chronic-disease registry. With a typical 5–15-year window you only
+have a handful of averaged decay points to fit, and a 2-parameter
+model is much more stable than a 3-parameter one. Use `hyperbolic`
+or `rational` only when you have a very long observation window
+(≥20 years) and visual inspection of the empirical pattern shows a
+clearly heavier tail than an exponential fit.
+
+| Situation | Recommended |
+|---|---|
+| Most cases (≥5 years, ≥100 cases/year) | defaults |
+| Very long window with chronic disease | try `model='hyperbolic'`, compare visually |
+| Cross-checking the parametric fit | `washout='historical'` |
+
+### Curve fitting: `fit_decay`
+
+Useful directly if you want to inspect the fitted decay curve:
+
+```python
+pattern = tq.washout_pattern(df, "K50", pct=True)
+fit = tq.fit_decay(pattern, model="exponential")
+fit["coeffs"]      # numpy array of parameters
+fit["asymptote"]   # long-x limit (the "true" rate after full lookback)
+fit["predict"]     # callable: f(days_array) -> decay values
+fit["aic"]         # Akaike information criterion (lower is better)
+fit["r2"]          # coefficient of determination
+```
+
+To compare all three models on the same pattern, pass `model="all"`:
+
+```python
+all_fits = tq.fit_decay(pattern, model="all")
+for name, fit in all_fits.items():
+    print(f"{name:12s}  AIC={fit['aic']:8.2f}  R²={fit['r2']:.4f}  "
+          f"asymptote={fit['asymptote']:.3f}")
+```
+
+A model whose AIC is more than ~2 lower than the next-best is meaningfully
+preferred. Differences within 2 are not distinguishable on the available
+data.
+
+`fit_decay` requires `scipy`. Install with the optional extra:
+
+```bash
+pip install tquery[incidence]
+```
+
+### Caveats
+
+- The functional adjustment assumes the per-year washout shape is stable
+  across the observation window. If true incidence is changing rapidly
+  *and* the bias structure changes too, the correction can be biased.
+- For `required_events >= 3`, the forward correction is approximate —
+  the asymptote captures the rate of "never-confirmed" persons, not
+  partial accumulators.
+- The historical adjustment is provided as a sanity check; it doesn't
+  smooth the empirical pattern, so noisy years can produce noisy
+  corrections.
 
 ---
 
