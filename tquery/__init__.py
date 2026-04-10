@@ -337,6 +337,33 @@ class TQueryAccessor:
     def count(self, expr: str, **kwargs: Any) -> int:
         return count_persons(self._df, expr, **kwargs)
 
+    def mask(
+        self, expr: str, *, level: str = "rows", **kwargs: Any,
+    ) -> pd.Series:
+        """Boolean mask for an expression.
+
+        Accepts the same expressions as ``count`` and ``pct`` (e.g.
+        ``"K50"``, ``"last 2 of K50"``, ``"after 2nd of K51"``,
+        ``"K50 before K51"``).
+
+        Args:
+            expr: A tquery expression string.
+            level: ``'rows'`` (default) returns a Series aligned to the
+                DataFrame's index. ``'persons'`` returns a Series
+                indexed by person ID.
+
+        Examples:
+            df.tq.mask("last 2 of K50")
+            df[df.tq.mask("after 2nd of K51")]
+            df.tq.mask("K50 before K51", level='persons')
+        """
+        if level not in ("rows", "persons"):
+            raise ValueError(
+                f"level must be 'rows' or 'persons', got {level!r}"
+            )
+        result = tquery(self._df, expr, **kwargs)
+        return result.rows if level == "rows" else result.persons
+
     def pct(self, expr: str, dropna: bool = True, **kwargs: Any) -> float:
         """Percentage of persons matching the expression, in 0..100.
 

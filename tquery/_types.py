@@ -160,6 +160,41 @@ class TQueryResult:
         """Boolean Series: True for each person with at least one matching row."""
         return self._row_mask.groupby(self._df[self._pid]).any()
 
+    def mask(self, sub_expr: str, *, level: str = "rows") -> pd.Series:
+        """Boolean mask for a sub-expression, evaluated against this result.
+
+        Parses ``sub_expr`` and runs it through the same Evaluator that
+        produced this result, so any sub-expression already computed by
+        the parent query is served from the cache.
+
+        Args:
+            sub_expr: A tquery expression string (e.g. ``"K50"``,
+                ``"last 2 of K50"``, ``"after 2nd of K51"``).
+            level: ``'rows'`` (default) returns a Series aligned to the
+                input DataFrame's index. ``'persons'`` returns a Series
+                indexed by person ID.
+
+        Examples:
+            >>> r = df.tq("K50 before K51")
+            >>> r.mask("K50")             # row mask, cache hit
+            >>> r.mask("last 2 of K50")   # K50 sub-mask reused from cache
+        """
+        if self._evaluator is None:
+            raise RuntimeError(
+                "TQueryResult.mask() requires an attached Evaluator; "
+                "this result was constructed without one."
+            )
+        if level not in ("rows", "persons"):
+            raise ValueError(
+                f"level must be 'rows' or 'persons', got {level!r}"
+            )
+        from tquery._parser import parse
+        ast = parse(sub_expr)
+        row_mask = self._evaluator.evaluate(ast)
+        if level == "rows":
+            return row_mask
+        return row_mask.groupby(self._df[self._pid]).any()
+
     @cached_property
     def pids(self) -> set:
         """Set of person IDs matching the query."""
