@@ -75,6 +75,8 @@ textarea::placeholder { color: #484f58; }
 .output-area img { max-width: 100%; margin: 8px 0; border-radius: 4px; background: #fff; }
 .output-error { color: #f85149; }
 .output-info { color: #8b949e; font-style: italic; }
+.output-matplotlib-img { display: block; max-width: 100%; height: auto; margin: 12px auto; border-radius: 6px; border: 1px solid #30363d; background: #fff; }
+.plotly-container { width: 100%; max-width: 720px; min-height: 320px; height: 360px; margin: 12px auto; padding: 4px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; box-sizing: border-box; }
 
 /* Docs panel */
 .docs-area { padding: 16px 24px; overflow: auto; flex: 1; max-width: 860px; }
@@ -315,6 +317,14 @@ const EXAMPLES = {
     { label: "wildcard",        code: `df.tq("K50 before K5*").count` },
     { label: "nested",          code: `df.tq("(min 2 of K50) and (K51 before K52)").count` },
   ],
+  "Quantifiers": [
+    { label: "any (default)",      code: `df.tq("any K50 after any K51").count` },
+    { label: "every on right",     code: `df.tq("K50 after every K51").count` },
+    { label: "every on left",      code: `df.tq("every K50 before K51").count` },
+    { label: "every both sides",   code: `df.tq("every K50 after every K51").count` },
+    { label: "every + window",     code: `df.tq("K50 within 100 days after every K51").count` },
+    { label: "all explained",      code: `df.tq("every K50 within 100 days after K51").count` },
+  ],
   "Results": [
     { label: "count",         code: `df.tq("K50 before K51").count` },
     { label: "pids",          code: `df.tq("K50 before K51").pids` },
@@ -545,6 +555,180 @@ let currentCsvText = "";
 let currentMode = "count"; // "code" or "count"
 
 // ---------------------------------------------------------------------------
+// Lazy plot dependencies
+// ---------------------------------------------------------------------------
+
+// Packages we have already attempted to install via micropip in this session.
+// Set membership prevents re-running an install on every Run press.
+const _installedPyPkgs = new Set();
+const _installPromises = new Map();
+
+// Scan user code for plotting library tokens. Returns a list of pyodide
+// micropip package names that should be ensured before exec.
+function detectPlotPackages(code) {
+  const wanted = [];
+  if (/\b(import\s+matplotlib|from\s+matplotlib\b|\.plot\s*[\(.]|\.plot\b)/.test(code)) {
+    wanted.push("matplotlib");
+  }
+  if (/\b(import\s+plotly|from\s+plotly\b)/.test(code)) {
+    wanted.push("plotly");
+  }
+  return wanted;
+}
+
+async function installPyPackage(pkg) {
+  if (_installedPyPkgs.has(pkg)) return;
+  if (_installPromises.has(pkg)) return _installPromises.get(pkg);
+  const statusEl = document.getElementById("status");
+  const prevText = statusEl.textContent;
+  const prevClass = statusEl.className;
+  statusEl.textContent = `Installing ${pkg}...`;
+  statusEl.className = "status";
+  const promise = (async () => {
+    try {
+      const micropip = pyodide.pyimport("micropip");
+      await micropip.install(pkg);
+      _installedPyPkgs.add(pkg);
+    } catch(e) {
+      console.warn(`micropip.install(${pkg}) failed:`, e);
+    } finally {
+      statusEl.textContent = prevText;
+      statusEl.className = prevClass;
+    }
+  })();
+  _installPromises.set(pkg, promise);
+  return promise;
+}
+
+async function ensurePackagesForCode(code) {
+  const pkgs = detectPlotPackages(code);
+  for (const pkg of pkgs) {
+    await installPyPackage(pkg);
+  }
+}
+
+// Plotly.js loaded lazily from CDN on first figure render.
+let _plotlyLoadPromise = null;
+function ensurePlotlyLoaded() {
+  if (typeof Plotly !== "undefined") return Promise.resolve(true);
+  if (_plotlyLoadPromise) return _plotlyLoadPromise;
+  _plotlyLoadPromise = new Promise((resolve) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.plot.ly/plotly-2.32.0.min.js";
+    s.onload = () => resolve(true);
+    s.onerror = () => resolve(false);
+    document.head.appendChild(s);
+  });
+  return _plotlyLoadPromise;
+}
+
+// ---------------------------------------------------------------------------
+// Output parsing: split stdout into text + embedded plots in source order
+// ---------------------------------------------------------------------------
+
+const EMBED_START = "__tquery_embed_start_";
+const EMBED_END = "__tquery_embed_end__";
+
+function parseOutput(raw) {
+  const parts = [];
+  let s = raw || "";
+  while (s.length > 0) {
+    const startIdx = s.indexOf(EMBED_START);
+    if (startIdx === -1) {
+      parts.push({ type: "text", content: s });
+      break;
+    }
+    const before = s.slice(0, startIdx);
+    if (before) parts.push({ type: "text", content: before });
+
+    const typeEnd = s.indexOf("__", startIdx + EMBED_START.length);
+    const embedType = typeEnd > startIdx
+      ? s.slice(startIdx + EMBED_START.length, typeEnd)
+      : "unknown";
+    const payloadStart = s.indexOf("\n", typeEnd) + 1;
+    const endIdx = s.indexOf(EMBED_END, payloadStart);
+    if (endIdx === -1) {
+      // Malformed: treat the rest as text
+      parts.push({ type: "text", content: s.slice(startIdx) });
+      break;
+    }
+    const payload = s.slice(payloadStart, endIdx).replace(/\n$/, "");
+    parts.push({ type: "embed", embedType, payload });
+    s = s.slice(endIdx + EMBED_END.length);
+    if (s.startsWith("\n")) s = s.slice(1);
+  }
+  return parts;
+}
+
+async function renderRunOutput(captured) {
+  const out = document.getElementById("output");
+  if (!captured || !captured.trim()) {
+    out.innerHTML = '<pre class="output-info">(no output)</pre>';
+    return;
+  }
+
+  const parts = parseOutput(captured);
+  const isError = captured.includes("Traceback (most recent call last)");
+  const frag = document.createDocumentFragment();
+
+  // Track whether we need plotly so we can await its load before rendering.
+  const needsPlotly = parts.some(p => p.type === "embed" && p.embedType === "figure");
+  const plotlyReady = needsPlotly ? await ensurePlotlyLoaded() : true;
+
+  for (const p of parts) {
+    if (p.type === "text") {
+      const txt = p.content;
+      if (!txt) continue;
+      const trimmed = txt.replace(/^\n+|\n+$/g, "");
+      if (!trimmed) continue;
+      const pre = document.createElement("pre");
+      if (isError) pre.className = "output-error";
+      pre.textContent = trimmed;
+      frag.appendChild(pre);
+    } else if (p.embedType === "png") {
+      const img = document.createElement("img");
+      img.className = "output-matplotlib-img";
+      img.alt = "matplotlib";
+      img.src = "data:image/png;base64," + String(p.payload).replace(/\s+/g, "");
+      frag.appendChild(img);
+    } else if (p.embedType === "figure") {
+      const div = document.createElement("div");
+      div.className = "plotly-container";
+      frag.appendChild(div);
+      if (plotlyReady && typeof Plotly !== "undefined") {
+        try {
+          const spec = JSON.parse(p.payload);
+          const data = spec.data || [];
+          const baseLayout = {
+            autosize: true,
+            margin: { t: 36, r: 24, b: 48, l: 56 },
+            paper_bgcolor: "#161b22",
+            plot_bgcolor: "#0d1117",
+            font: { color: "#c9d1d9", family: "Segoe UI, system-ui, sans-serif", size: 12 },
+            xaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d", linecolor: "#30363d", tickfont: { color: "#c9d1d9" } },
+            yaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d", linecolor: "#30363d", tickfont: { color: "#c9d1d9" } }
+          };
+          const layout = Object.assign(baseLayout, spec.layout || {});
+          Plotly.newPlot(div, data, layout, { responsive: true });
+        } catch(e) {
+          div.textContent = "[Plotly figure – could not parse]";
+        }
+      } else {
+        div.textContent = "[Plotly figure – plotly.js failed to load]";
+      }
+    } else {
+      const pre = document.createElement("pre");
+      pre.className = "output-info";
+      pre.textContent = `[Embed: ${p.embedType}]`;
+      frag.appendChild(pre);
+    }
+  }
+
+  out.innerHTML = "";
+  out.appendChild(frag);
+}
+
+// ---------------------------------------------------------------------------
 // Code execution
 // ---------------------------------------------------------------------------
 
@@ -567,114 +751,173 @@ async function runCode() {
   }
 
   try {
+    // Lazy install plotting libraries the first time the user actually
+    // needs them. Cold start stays pyodide+pandas+tquery only.
+    await ensurePackagesForCode(userCode);
+
     const dfCode = buildDfCode(csvText, 0);
     const fullCode = `
-import sys, io
+import sys, io, ast as _ast_mod, base64
 
 ${dfCode}
 
 _old_stdout = sys.stdout
 sys.stdout = _capture_buf = io.StringIO()
-_plot_data = None
 _highlight_pids = None
 _highlight_count = 0
 _total_persons = 0
+_last_value = None
+_EMBED_S = "__tquery_embed_start_"
+_EMBED_E = "__tquery_embed_end__"
 
-try:
-    _has_plt = False
+def _emit_embed(kind, payload):
+    sys.stdout.write(_EMBED_S + kind + "__\\n" + payload + "\\n" + _EMBED_E + "\\n")
+
+def _show_one(obj):
+    if obj is None:
+        return
+    # plotly Figure
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        _has_plt = True
-        plt.close('all')
+        import plotly.graph_objects as _go
+        if isinstance(obj, _go.Figure):
+            import plotly.io as _pio
+            _emit_embed("figure", _pio.to_json(obj))
+            return
     except ImportError:
         pass
+    except Exception as _ex:
+        print("show(plotly):", _ex)
+    # matplotlib Figure / Axes / anything with .figure.savefig
+    try:
+        from matplotlib.figure import Figure as _MplFigure
+        from matplotlib.axes import Axes as _MplAxes
+        _fig = None
+        if isinstance(obj, _MplFigure):
+            _fig = obj
+        elif isinstance(obj, _MplAxes):
+            _fig = obj.figure
+        elif getattr(obj, "figure", None) is not None and hasattr(obj.figure, "savefig"):
+            _fig = obj.figure
+        if _fig is not None:
+            import matplotlib
+            matplotlib.use("Agg")
+            _buf = io.BytesIO()
+            _fig.savefig(_buf, format="png", dpi=100, bbox_inches="tight",
+                         facecolor="#0d1117", edgecolor="none")
+            _b64 = base64.standard_b64encode(_buf.getvalue()).decode("ascii")
+            _emit_embed("png", _b64)
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(_fig)
+            except Exception:
+                pass
+            return
+    except ImportError:
+        pass
+    except Exception as _ex:
+        print("show(matplotlib):", _ex)
+    # tquery TQueryResult: print count, leave highlight to outer harness
+    try:
+        from tquery._types import TQueryResult as _TQR
+        if isinstance(obj, _TQR):
+            print(obj.count)
+            return
+    except Exception:
+        pass
+    # pandas DataFrame / Series
+    try:
+        if isinstance(obj, (pd.DataFrame, pd.Series)):
+            print(obj)
+            return
+    except Exception:
+        pass
+    # iterables of objects (lists/tuples) — recurse
+    if isinstance(obj, (list, tuple)):
+        for _x in obj:
+            _show_one(_x)
+        return
+    print(obj)
 
-    _result = None
+def show(*args):
+    for _a in args:
+        _show_one(_a)
+
+try:
+    # close any stale matplotlib figures left from a previous run
+    if "matplotlib" in sys.modules:
+        try:
+            import matplotlib.pyplot as _plt_pre
+            _plt_pre.close("all")
+        except Exception:
+            pass
+
     _lines = """${userCode.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"').replace(/\n/g, '\\n')}""".strip().split("\\n")
     _exec_code = "\\n".join(_lines)
 
-    import ast as _ast_mod
     try:
         _tree = _ast_mod.parse(_exec_code)
-        if _tree.body and isinstance(_tree.body[-1], _ast_mod.Expr):
-            _last_expr = _ast_mod.Expression(body=_tree.body[-1].value)
-            _ast_mod.fix_missing_locations(_last_expr)
-            _rest = _ast_mod.Module(body=_tree.body[:-1], type_ignores=[])
-            _ast_mod.fix_missing_locations(_rest)
-            exec(compile(_rest, "<playground>", "exec"))
-            _result = eval(compile(_last_expr, "<playground>", "eval"))
-        else:
-            exec(compile(_tree, "<playground>", "exec"))
     except SyntaxError:
         exec(_exec_code)
+        _tree = None
 
-    if _has_plt and plt.get_fignums():
-        import base64
-        _fig_buf = io.BytesIO()
-        plt.savefig(_fig_buf, format='png', dpi=100, bbox_inches='tight',
-                    facecolor='#0d1117', edgecolor='none')
-        plt.close('all')
-        _fig_buf.seek(0)
-        _plot_data = base64.b64encode(_fig_buf.read()).decode('ascii')
+    if _tree is not None:
+        for _stmt in _tree.body:
+            if isinstance(_stmt, _ast_mod.Expr):
+                _expr_node = _ast_mod.Expression(body=_stmt.value)
+                _ast_mod.fix_missing_locations(_expr_node)
+                _v = eval(compile(_expr_node, "<playground>", "eval"))
+                if _v is not None:
+                    _last_value = _v
+                    _show_one(_v)
+            else:
+                _mod_node = _ast_mod.Module(body=[_stmt], type_ignores=[])
+                _ast_mod.fix_missing_locations(_mod_node)
+                exec(compile(_mod_node, "<playground>", "exec"))
+
+    # Auto-flush any matplotlib figures created via pyplot.plot()-style usage
+    # that didn't go through show(). df.plot.bar() returns an Axes which we
+    # already captured above, but bare plt.plot() leaves a figure open.
+    try:
+        import matplotlib.pyplot as _plt_post
+        for _num in _plt_post.get_fignums():
+            _show_one(_plt_post.figure(_num))
+    except Exception:
+        pass
+
+    # Populate highlight from a trailing TQueryResult expression
+    try:
+        from tquery._types import TQueryResult as _TQR2
+        if isinstance(_last_value, _TQR2):
+            _highlight_pids = list(_last_value.pids)
+            _highlight_count = _last_value.count
+            _total_persons = int(df[df.columns[0]].nunique())
+    except Exception:
+        pass
 
     _captured = _capture_buf.getvalue()
-
-    # Check for TQueryResult to highlight matching persons
-    from tquery._types import TQueryResult as _TQR
-
-    if _result is not None:
-        if isinstance(_result, _TQR):
-            _captured += str(_result.count) + "\\n"
-        elif isinstance(_result, pd.DataFrame):
-            _captured += _result.to_string() + "\\n"
-        elif isinstance(_result, pd.Series):
-            _captured += _result.to_string() + "\\n"
-        else:
-            _captured += repr(_result) + "\\n"
-
-    if isinstance(_result, _TQR):
-        _highlight_pids = list(_result.pids)
-        _highlight_count = _result.count
-        _total_persons = int(df[df.columns[0]].nunique())
-
 except Exception as _e:
     import traceback
     _captured = _capture_buf.getvalue()
     _captured += "\\n" + traceback.format_exc()
-    _plot_data = None
     _highlight_pids = None
 finally:
     sys.stdout = _old_stdout
 
-(_captured, _plot_data, _highlight_pids, _highlight_count, _total_persons)
+(_captured, _highlight_pids, _highlight_count, _total_persons)
 `;
     const result = await pyodide.runPythonAsync(fullCode);
     const captured = result.get(0);
-    const plotData = result.get(1);
-    const highlightPids = result.get(2);
-    const highlightCount = result.get(3);
-    const totalPersons = result.get(4);
+    const highlightPids = result.get(1);
+    const highlightCount = result.get(2);
+    const totalPersons = result.get(3);
     result.destroy();
 
-    let html = "";
-    if (captured && captured.trim()) {
-      if (captured.includes("Traceback (most recent call last)")) {
-        html += `<pre class="output-error">${escapeHtml(captured)}</pre>`;
-      } else {
-        html += `<pre>${escapeHtml(captured)}</pre>`;
-      }
-    }
-    if (plotData) html += `<img src="data:image/png;base64,${plotData}" alt="plot">`;
-    if (!html) html = '<pre class="output-info">(no output)</pre>';
-    showOutput(html);
+    await renderRunOutput(captured);
 
     // Highlight matching persons in data panel
     if (highlightPids) {
       const pidsArray = highlightPids.toJs();
       highlightPids.destroy();
-      // Switch left panel to data tab
       switchLeftTab("dataContent");
       renderHighlightedTable(currentCsvText, pidsArray, highlightCount, totalPersons);
     }
@@ -1031,7 +1274,7 @@ df.tq.count('min 2 of K50')
 | \`K50 inside 5 events after K51\` | K50 within next 5 events after K51 |
 | \`K50 outside 10 events before K51\` | K50 not within 10 events before K51 |
 
-#### Quantifiers
+#### Quantifiers (counts)
 
 | Expression | Meaning |
 |-----------|---------|
@@ -1039,6 +1282,18 @@ df.tq.count('min 2 of K50')
 | \`max 3 of K50\` | At most 3 K50 events |
 | \`exactly 1 of K50\` | Exactly 1 K50 event |
 | \`2-5 of K50\` | Between 2 and 5 K50 events |
+
+#### Quantifiers (universal / existential)
+
+| Expression | Meaning |
+|-----------|---------|
+| \`any K50 after K51\` | Default — same as \`K50 after K51\` (sugar) |
+| \`K50 after every K51\` | Every K51 has a K50 after it (K51 must be non-empty) |
+| \`every K50 before K51\` | Every K50 has a K51 after it |
+| \`every K50 after every K51\` | All K50s strictly follow all K51s |
+| \`K50 within 100 days after every K51\` | Every K51 followed by K50 within 100 days |
+
+\`every X\` requires the person to have at least one X event (no vacuous truth). \`every\`/\`any\` can only precede a bare code or \`@variable\` — not parens, counting prefixes, or \`not\`.
 
 #### Positional
 
