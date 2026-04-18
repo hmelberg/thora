@@ -58,6 +58,21 @@ class TestOrdinal:
         # Only Person 3 has a 3rd A at idx 8
         assert list(result) == [False, False, False, False, False, False, False, False, True]
 
+    def test_minus_1st(self, df, mask_a):
+        # Last A per person: idx 1 (P1), idx 3 (P2), idx 8 (P3)
+        result = eval_prefix("ordinal", -1, mask_a, df["pid"])
+        assert list(result) == [False, True, False, True, False, False, False, False, True]
+
+    def test_minus_2nd(self, df, mask_a):
+        # 2nd-to-last A per person: idx 0 (P1), none (P2 has 1 A), idx 7 (P3)
+        result = eval_prefix("ordinal", -2, mask_a, df["pid"])
+        assert list(result) == [True, False, False, False, False, False, False, True, False]
+
+    def test_minus_3rd(self, df, mask_a):
+        # 3rd-to-last A per person: only P3 has ≥3 A's → idx 6
+        result = eval_prefix("ordinal", -3, mask_a, df["pid"])
+        assert list(result) == [False, False, False, False, False, False, True, False, False]
+
 
 class TestFirstLast:
     def test_first_2(self, df, mask_a):

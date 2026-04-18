@@ -77,9 +77,19 @@ def _eval_ordinal(
     child_mask: pd.Series,
     pid_col: pd.Series,
 ) -> pd.Series:
-    """Select only the nth occurrence per person (1-based)."""
+    """Select only the nth occurrence per person (1-based).
+
+    Positive n counts from the start (1st, 2nd, ...); negative n counts
+    from the end (-1st = last, -2nd = second-to-last, ...).
+    """
     cumcount = child_mask.groupby(pid_col).cumsum()
-    return child_mask & (cumcount == n)
+    if n > 0:
+        return child_mask & (cumcount == n)
+    # Negative: reverse_pos = total − cumcount + 1
+    # (1 = last match, 2 = 2nd-to-last, ...)
+    total = child_mask.groupby(pid_col).transform("sum")
+    reverse_pos = total - cumcount + 1
+    return child_mask & (reverse_pos == abs(n))
 
 
 def _eval_first_n(

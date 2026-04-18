@@ -3,15 +3,19 @@
 import pytest
 
 from tquery._ast import (
+    BetweenExpr,
     BinaryLogical,
     CodeAtom,
     ComparisonAtom,
+    EventAtom,
     InsideExpr,
     NotExpr,
     PrefixExpr,
     Quantifier,
+    ShiftExpr,
     TemporalExpr,
     WithinExpr,
+    WithinSpanExpr,
 )
 from tquery._parser import Token, TokenType, parse, tokenize
 from tquery._types import TQuerySyntaxError
@@ -61,9 +65,9 @@ class TestTokenizer:
             assert tokens[0].value == op
 
     def test_keywords_recognized(self):
-        tokens = tokenize("before after and or not within")
+        tokens = tokenize("before after and or not inside")
         kw_values = [t.value for t in tokens if t.type == TokenType.KEYWORD]
-        assert kw_values == ["before", "after", "and", "or", "not", "within"]
+        assert kw_values == ["before", "after", "and", "or", "not", "inside"]
 
     def test_parens_and_comma(self):
         tokens = tokenize("(K50, K51)")
@@ -83,14 +87,14 @@ class TestTokenizer:
         assert tokens[1].value == "myvar"
 
     def test_complex_expression(self):
-        tokens = tokenize("min 3 of K50* within 100 days after 1st K51")
+        tokens = tokenize("min 3 of K50* inside 100 days after 1st K51")
         types = [t.type for t in tokens[:-1]]
         assert types == [
             TokenType.KEYWORD,   # min
             TokenType.INT,       # 3
             TokenType.KEYWORD,   # of
             TokenType.STAR_CODE, # K50*
-            TokenType.KEYWORD,   # within
+            TokenType.KEYWORD,   # inside
             TokenType.INT,       # 100
             TokenType.KEYWORD,   # days
             TokenType.KEYWORD,   # after
@@ -197,6 +201,37 @@ class TestParserPrefix:
         assert ast.kind == "ordinal"
         assert ast.n == 1
 
+    def test_negative_ordinal(self):
+        ast = parse("-1st K51")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.kind == "ordinal"
+        assert ast.n == -1
+        assert isinstance(ast.child, CodeAtom)
+
+    def test_negative_ordinal_event(self):
+        ast = parse("-3rd event")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.kind == "ordinal"
+        assert ast.n == -3
+        assert isinstance(ast.child, EventAtom)
+
+    def test_negative_ordinal_of(self):
+        ast = parse("-2nd of K50")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.n == -2
+
+    def test_negative_zero_ordinal_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="-0"):
+            parse("-0th K51")
+
+    def test_negative_ordinal_as_window_ref(self):
+        # Combines the new negative ordinal with the window grammar.
+        ast = parse("K50 inside 30 days after -1st K51")
+        assert isinstance(ast, WithinExpr)
+        assert isinstance(ast.ref, PrefixExpr)
+        assert ast.ref.kind == "ordinal"
+        assert ast.ref.n == -1
+
     def test_first_n(self):
         ast = parse("first 5 of K50")
         assert isinstance(ast, PrefixExpr)
@@ -251,44 +286,306 @@ class TestParserOperators:
 
 
 # ---------------------------------------------------------------------------
-# Parser tests — within/inside
+# Parser tests — inside/outside windows
 # ---------------------------------------------------------------------------
 
-class TestParserWithin:
-    def test_within_days(self):
-        ast = parse("K50 within 100 days")
+class TestParserInside:
+    def test_inside_days(self):
+        ast = parse("K50 inside 100 days")
         assert isinstance(ast, WithinExpr)
         assert ast.days == 100
         assert ast.direction is None
         assert ast.ref is None
+        assert ast.outside is False
         assert isinstance(ast.child, CodeAtom)
 
-    def test_within_days_after(self):
-        ast = parse("K50 within 100 days after K51")
+    def test_inside_days_after(self):
+        ast = parse("K50 inside 100 days after K51")
         assert isinstance(ast, WithinExpr)
         assert ast.days == 100
         assert ast.direction == "after"
         assert isinstance(ast.ref, CodeAtom)
         assert ast.ref.codes == ("K51",)
 
-    def test_within_days_before(self):
-        ast = parse("K50 within 30 days before K51")
+    def test_inside_days_before(self):
+        ast = parse("K50 inside 30 days before K51")
         assert isinstance(ast, WithinExpr)
         assert ast.direction == "before"
+
+    def test_outside_days(self):
+        ast = parse("K50 outside 100 days after K51")
+        assert isinstance(ast, WithinExpr)
+        assert ast.outside is True
+        assert ast.days == 100
+        assert ast.direction == "after"
 
     def test_inside_events(self):
         ast = parse("K50 inside 5 events after K51")
         assert isinstance(ast, InsideExpr)
         assert ast.inside is True
-        assert ast.n_events == 5
+        # Shorthand: +1..+5 events after Y
+        assert ast.min_events == 1
+        assert ast.max_events == 5
         assert ast.direction == "after"
 
     def test_outside_events(self):
         ast = parse("K50 outside 10 events before K51")
         assert isinstance(ast, InsideExpr)
         assert ast.inside is False
-        assert ast.n_events == 10
+        assert ast.min_events == 1
+        assert ast.max_events == 10
         assert ast.direction == "before"
+
+    def test_inside_events_range(self):
+        ast = parse("K50 inside 3 to 5 events after K51")
+        assert isinstance(ast, InsideExpr)
+        assert ast.min_events == 3
+        assert ast.max_events == 5
+        assert ast.direction == "after"
+
+    def test_inside_days_range(self):
+        ast = parse("K50 inside 5 to 7 days after K51")
+        assert isinstance(ast, WithinExpr)
+        assert ast.min_days == 5
+        assert ast.days == 7
+        assert ast.direction == "after"
+
+    def test_inside_signed_around(self):
+        ast = parse("K50 inside -5 to 20 days around K51")
+        assert isinstance(ast, WithinExpr)
+        assert ast.min_days == -5
+        assert ast.days == 20
+        assert ast.direction == "around"
+
+    def test_negative_with_after_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="Negative offsets"):
+            parse("K50 inside -5 days after K51")
+
+    def test_descending_range_errors(self):
+        with pytest.raises(TQuerySyntaxError, match="ascending"):
+            parse("K50 inside 3 to -2 days around K51")
+
+
+# ---------------------------------------------------------------------------
+# Parser tests — event/events atom
+# ---------------------------------------------------------------------------
+
+class TestParserEventAtom:
+    def test_event_singular(self):
+        assert isinstance(parse("event"), EventAtom)
+
+    def test_events_plural(self):
+        assert isinstance(parse("events"), EventAtom)
+
+    def test_ordinal_event(self):
+        ast = parse("5th event")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.kind == "ordinal"
+        assert ast.n == 5
+        assert isinstance(ast.child, EventAtom)
+
+    def test_ordinal_of_events(self):
+        ast = parse("3rd of events")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.kind == "ordinal"
+        assert ast.n == 3
+        assert isinstance(ast.child, EventAtom)
+
+    def test_last_n_events(self):
+        ast = parse("last 5 events")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.kind == "last"
+        assert ast.n == 5
+        assert isinstance(ast.child, EventAtom)
+
+    def test_first_n_of_events(self):
+        ast = parse("first 3 of events")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.kind == "first"
+        assert ast.n == 3
+        assert isinstance(ast.child, EventAtom)
+
+    def test_min_n_event(self):
+        ast = parse("min 2 of event")
+        assert isinstance(ast, PrefixExpr)
+        assert ast.kind == "min"
+        assert ast.n == 2
+        assert isinstance(ast.child, EventAtom)
+
+    def test_before_nth_event(self):
+        ast = parse("K50 before 5th event")
+        assert isinstance(ast, TemporalExpr)
+        assert ast.op == "before"
+        assert isinstance(ast.left, CodeAtom)
+        assert isinstance(ast.right, PrefixExpr)
+        assert isinstance(ast.right.child, EventAtom)
+
+    def test_after_nth_event(self):
+        ast = parse("K50 after 3rd event")
+        assert isinstance(ast, TemporalExpr)
+        assert ast.op == "after"
+        assert isinstance(ast.right, PrefixExpr)
+        assert isinstance(ast.right.child, EventAtom)
+
+
+# ---------------------------------------------------------------------------
+# Parser tests — inside EXPR and EXPR (positional bounds)
+# ---------------------------------------------------------------------------
+
+class TestParserInsideBounds:
+    def test_bounds_ordinals_same_code(self):
+        ast = parse("K50 inside 1st K51 and 5th K51")
+        assert isinstance(ast, BetweenExpr)
+        assert isinstance(ast.child, CodeAtom)
+        assert ast.child.codes == ("K50",)
+        assert isinstance(ast.bound_start, PrefixExpr)
+        assert ast.bound_start.kind == "ordinal"
+        assert ast.bound_start.n == 1
+        assert isinstance(ast.bound_end, PrefixExpr)
+        assert ast.bound_end.n == 5
+        assert ast.outside is False
+
+    def test_bounds_different_codes(self):
+        ast = parse("K50 inside 1st K51 and 3rd K52")
+        assert isinstance(ast, BetweenExpr)
+        assert ast.bound_start.child.codes == ("K51",)
+        assert ast.bound_end.child.codes == ("K52",)
+
+    def test_bounds_events(self):
+        ast = parse("K50 inside 1st event and 10th event")
+        assert isinstance(ast, BetweenExpr)
+        assert isinstance(ast.bound_start.child, EventAtom)
+        assert isinstance(ast.bound_end.child, EventAtom)
+
+    def test_bounds_first_last_of(self):
+        ast = parse("K50 inside 1st K51 and last 1 of K51")
+        assert isinstance(ast, BetweenExpr)
+        assert ast.bound_end.kind == "last"
+        assert ast.bound_end.n == 1
+
+    def test_range_days(self):
+        # `inside N to M days` replaces the old `between N and M days` form.
+        ast = parse("K50 inside 30 to 90 days after K51")
+        assert isinstance(ast, WithinExpr)
+        assert ast.min_days == 30
+        assert ast.days == 90
+        assert ast.direction == "after"
+
+    def test_outside_bounds(self):
+        ast = parse("K50 outside 1st K51 and 5th K51")
+        assert isinstance(ast, BetweenExpr)
+        assert ast.outside is True
+
+
+# ---------------------------------------------------------------------------
+# Parser tests — shifted anchors (`± N days`)
+# ---------------------------------------------------------------------------
+
+class TestParserShiftedAnchors:
+    def test_shift_negative(self):
+        ast = parse("1st K51 before 1st K50 - 100 days")
+        assert isinstance(ast, TemporalExpr)
+        assert ast.op == "before"
+        assert isinstance(ast.right, ShiftExpr)
+        assert ast.right.offset_days == -100
+        assert isinstance(ast.right.child, PrefixExpr)
+        assert ast.right.child.kind == "ordinal"
+        assert ast.right.child.n == 1
+
+    def test_shift_positive(self):
+        ast = parse("1st K51 before 1st K50 + 30 days")
+        assert isinstance(ast, TemporalExpr)
+        assert isinstance(ast.right, ShiftExpr)
+        assert ast.right.offset_days == 30
+
+    def test_shift_parenthesized(self):
+        # Parens are optional — equivalent AST
+        ast1 = parse("1st K51 before 1st K50 - 100 days")
+        ast2 = parse("1st K51 before (1st K50 - 100 days)")
+        assert ast1 == ast2
+
+    def test_shift_chain(self):
+        ast = parse("1st K51 before 1st K50 - 30 days - 7 days")
+        assert isinstance(ast, TemporalExpr)
+        outer = ast.right
+        assert isinstance(outer, ShiftExpr)
+        assert outer.offset_days == -7
+        inner = outer.child
+        assert isinstance(inner, ShiftExpr)
+        assert inner.offset_days == -30
+
+    def test_shift_in_window_ref(self):
+        ast = parse("K50 inside 30 days after 1st K51 + 7 days")
+        assert isinstance(ast, WithinExpr)
+        assert ast.days == 30
+        assert ast.direction == "after"
+        assert isinstance(ast.ref, ShiftExpr)
+        assert ast.ref.offset_days == 7
+
+    def test_shift_in_both_bounds(self):
+        ast = parse("K50 inside 1st K51 - 7 days and 5th K51 + 7 days")
+        assert isinstance(ast, BetweenExpr)
+        assert isinstance(ast.bound_start, ShiftExpr)
+        assert ast.bound_start.offset_days == -7
+        assert isinstance(ast.bound_end, ShiftExpr)
+        assert ast.bound_end.offset_days == 7
+
+    def test_shift_on_negative_ordinal(self):
+        ast = parse("K50 before -1st K51 - 30 days")
+        assert isinstance(ast, TemporalExpr)
+        assert isinstance(ast.right, ShiftExpr)
+        assert ast.right.offset_days == -30
+        assert ast.right.child.n == -1
+
+    def test_shift_requires_single_date_plain_code(self):
+        with pytest.raises(TQuerySyntaxError, match="single-date"):
+            parse("K50 - 30 days")
+
+    def test_shift_requires_single_date_first_n(self):
+        with pytest.raises(TQuerySyntaxError, match="single-date"):
+            parse("first 2 of K51 - 30 days")
+
+    def test_shift_requires_single_date_min_n(self):
+        with pytest.raises(TQuerySyntaxError, match="single-date"):
+            parse("min 2 of K51 + 30 days")
+
+
+# ---------------------------------------------------------------------------
+# Parser tests — inside EXPR (positional span)
+# ---------------------------------------------------------------------------
+
+class TestParserInsideSpan:
+    def test_span_last_n_events(self):
+        ast = parse("K50 inside last 5 events")
+        assert isinstance(ast, WithinSpanExpr)
+        assert isinstance(ast.child, CodeAtom)
+        assert isinstance(ast.ref, PrefixExpr)
+        assert ast.ref.kind == "last"
+        assert ast.ref.n == 5
+        assert isinstance(ast.ref.child, EventAtom)
+        assert ast.outside is False
+
+    def test_span_first_n_of_k51(self):
+        ast = parse("K50 inside first 3 of K51")
+        assert isinstance(ast, WithinSpanExpr)
+        assert ast.ref.kind == "first"
+        assert ast.ref.n == 3
+
+    def test_span_last_n_of_code(self):
+        ast = parse("K50 inside last 2 of K50")
+        assert isinstance(ast, WithinSpanExpr)
+        assert ast.ref.kind == "last"
+
+    def test_outside_span(self):
+        ast = parse("K50 outside last 5 events")
+        assert isinstance(ast, WithinSpanExpr)
+        assert ast.outside is True
+
+    def test_numeric_days_still_works(self):
+        ast = parse("K50 inside 100 days after K51")
+        assert isinstance(ast, WithinExpr)
+        assert ast.days == 100
+        assert ast.direction == "after"
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +624,8 @@ class TestParserCompound:
         assert isinstance(ast.right, PrefixExpr)
 
     def test_complex_expression(self):
-        ast = parse("min 3 of K50* within 100 days after 1st of K51")
-        # With correct precedence: min 3 of (K50* within 100 days after (1st of K51))
+        ast = parse("min 3 of K50* inside 100 days after 1st of K51")
+        # With correct precedence: min 3 of (K50* inside 100 days after (1st of K51))
         assert isinstance(ast, PrefixExpr)
         assert ast.kind == "min"
         assert ast.n == 3
@@ -336,10 +633,10 @@ class TestParserCompound:
         assert isinstance(ast.child, WithinExpr)
         assert ast.child.days == 100
         assert ast.child.direction == "after"
-        # within's child is CodeAtom(K50*)
+        # window's child is CodeAtom(K50*)
         assert isinstance(ast.child.child, CodeAtom)
         assert ast.child.child.codes == ("K50*",)
-        # within's ref is PrefixExpr(ordinal, 1, CodeAtom(K51))
+        # window's ref is PrefixExpr(ordinal, 1, CodeAtom(K51))
         assert isinstance(ast.child.ref, PrefixExpr)
         assert ast.child.ref.kind == "ordinal"
 
@@ -374,7 +671,7 @@ class TestParserErrors:
 
     def test_missing_days_keyword(self):
         with pytest.raises(TQuerySyntaxError, match="'days'"):
-            parse("K50 within 100 K51")
+            parse("K50 inside 100 K51")
 
     def test_missing_number_after_min(self):
         with pytest.raises(TQuerySyntaxError, match="Expected integer"):
@@ -422,12 +719,27 @@ class TestParserQuantifiers:
         assert isinstance(ast.right, CodeAtom)
 
     def test_every_on_within_ref(self):
-        ast = parse("K50 within 100 days after every K51")
+        ast = parse("K50 inside 100 days after every K51")
         assert isinstance(ast, WithinExpr)
         assert ast.days == 100
         assert ast.direction == "after"
         assert isinstance(ast.ref, Quantifier)
         assert ast.ref.kind == "every"
+
+    def test_each_is_synonym_for_every(self):
+        ast1 = parse("K50 inside 100 days after each K51")
+        ast2 = parse("K50 inside 100 days after every K51")
+        assert ast1 == ast2
+
+    def test_always_is_synonym_for_every(self):
+        ast1 = parse("always K50 inside 100 days after K51")
+        ast2 = parse("every K50 inside 100 days after K51")
+        assert ast1 == ast2
+
+    def test_never_is_synonym_for_not(self):
+        ast1 = parse("never K50 inside 100 days after K51")
+        ast2 = parse("not K50 inside 100 days after K51")
+        assert ast1 == ast2
 
     def test_every_simultaneously(self):
         ast = parse("every K50 simultaneously K51")

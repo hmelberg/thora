@@ -14,16 +14,20 @@ from typing import Any
 
 from tquery._ast import (
     ASTNode,
+    BetweenExpr,
     BinaryLogical,
     CodeAtom,
     ComparisonAtom,
+    EventAtom,
     InsideExpr,
     NotExpr,
     PrefixExpr,
     Quantifier,
     RangePrefixExpr,
+    ShiftExpr,
     TemporalExpr,
     WithinExpr,
+    WithinSpanExpr,
 )
 from tquery._types import TQuerySyntaxError
 
@@ -52,14 +56,14 @@ class TokenType(Enum):
 
 KEYWORDS = frozenset({
     "before", "after", "simultaneously",
-    "within", "between", "inside", "outside",
-    "and", "or", "not",
+    "inside", "outside",
+    "and", "or", "not", "never",
     "min", "max", "exactly",
-    "of", "in",
+    "of", "in", "to",
     "first", "last",
-    "days", "events",
+    "days", "event", "events",
     "around",
-    "every", "any",
+    "every", "any", "each", "always",
 })
 
 # Keywords that are also valid as direction modifiers inside within/inside clauses
@@ -80,7 +84,7 @@ _TOKEN_PATTERNS: list[tuple[str, TokenType | None]] = [
     (r"\)", TokenType.RPAREN),
     (r",", TokenType.COMMA),
     (r"@", TokenType.AT),
-    (r">=|<=|!=|==|[><]", TokenType.OP),
+    (r">=|<=|!=|==|[><+\-]", TokenType.OP),
     (r"\d+(st|nd|rd|th)\b", TokenType.ORDINAL),              # 1st, 2nd, 3rd, 4th
     (r"\d+\.\d+", TokenType.FLOAT),                          # 8.5
     (r"\d+-\d+", TokenType.INT_RANGE),                       # 2-5 (count range)
@@ -161,13 +165,17 @@ class Parser:
         and_expr      ::= temporal_expr ('and' temporal_expr)*
         temporal_expr ::= not_expr (('before'|'after'|'simultaneously') not_expr)?
         not_expr      ::= 'not'? prefix_expr
-        prefix_expr   ::= prefix? within_expr
-        within_expr   ::= atom ('within' INT 'days' (direction ('of'? atom)?)? )?
-                        | atom ('inside'|'outside') INT 'events' direction ('of'? atom)?
+        prefix_expr   ::= prefix_core shift_suffix*
+        shift_suffix  ::= ('+' | '-') INT 'days'
+        prefix_core   ::= prefix? inside_expr
+        inside_expr   ::= atom (('inside'|'outside') inside_tail)?
+        inside_tail   ::= INT ('to' INT)? ('days'|'events') [dir ['of'] ref]
+                        | EXPR ('and' EXPR)?
         prefix        ::= ('min'|'max'|'exactly') INT 'of'
                         | ORDINAL 'of'
                         | ('first'|'last') INT 'of'
         atom          ::= '(' query ')'
+                        | 'event' | 'events'
                         | code_expr column_spec?
                         | column_comparison
         code_expr     ::= code_item (',' code_item)*
@@ -175,9 +183,10 @@ class Parser:
         column_spec   ::= 'in' IDENT (',' IDENT)*
         column_comp   ::= IDENT OP NUMBER
 
-    Precedence note: 'within'/'inside' bind tighter than prefixes so that
-    'min 2 of X within 50 days' means 'min 2 of (X within 50 days)' — i.e.,
-    the time window filters rows first, then the count is applied.
+    Precedence note: 'inside'/'outside' bind tighter than prefixes so that
+    'min 2 of X inside 50 days after Y' means 'min 2 of (X inside 50 days
+    after Y)' — i.e., the window filters rows first, then the count is
+    applied.
     """
 
     def __init__(self, tokens: list[Token], expr: str) -> None:
@@ -251,52 +260,92 @@ class Parser:
         return left
 
     def _try_quantified(self) -> ASTNode | None:
-        """Try to parse an `every`/`any` quantifier followed by a code atom.
+        """Try to parse a quantifier (`every`, `any`, `each`, `always`) followed by a code atom.
+
+        `every`, `each`, and `always` are synonyms for universal
+        quantification — `each` reads more naturally on a window's ref
+        side, `always` on the subject side. `any` is the existential
+        default and is elided as a no-op. All four are restricted to
+        bare code expressions (same restrictions as `every`).
 
         Returns:
-            - `Quantifier(every, CodeAtom(...))` for `every K50`
-            - A `WithinExpr`/`InsideExpr` with quantified child if a window
-              follows (e.g. `every K50 within 100 days after K51`)
-            - `CodeAtom(...)` for `any K50` (the `any` is elided as a no-op)
+            - `Quantifier(every, CodeAtom)` for `every/each/always X`
+            - A window expression if one follows
+            - `X` for `any X` (the `any` is elided as a no-op)
             - `None` if no quantifier keyword is present (caller falls back)
-
-        `every`/`any` may only precede a bare code expression. Combinations
-        with parentheses, counting prefixes, or `not` are rejected.
         """
-        if not self._at_keyword("every", "any"):
+        if not self._at_keyword("every", "any", "each", "always"):
             return None
-        kind = self._advance().value
+        kind_keyword = self._advance().value
+        # `each`/`always` map onto `every` at the AST level.
+        is_any = kind_keyword == "any"
+
         tok = self._peek()
         if tok.type == TokenType.LPAREN:
             raise self._error(
-                f"'{kind}' cannot be applied to a parenthesized group"
+                f"'{kind_keyword}' cannot be applied to a parenthesized group"
             )
         if tok.type == TokenType.KEYWORD and tok.value in (
-            "min", "max", "exactly", "first", "last", "not",
+            "min", "max", "exactly", "first", "last", "not", "never",
         ):
             raise self._error(
-                f"'{kind}' cannot be combined with '{tok.value}'"
+                f"'{kind_keyword}' cannot be combined with '{tok.value}'"
             )
         if tok.type == TokenType.INT_RANGE or tok.type == TokenType.ORDINAL:
             raise self._error(
-                f"'{kind}' cannot be combined with a count prefix"
+                f"'{kind_keyword}' cannot be combined with a count prefix"
             )
         atom = self._parse_code_expr()
-        wrapped = atom if kind == "any" else Quantifier(kind="every", child=atom)
-        # If a within/inside window follows, attach it to the quantified atom
-        # so the AST shape is WithinExpr(child=Quantifier(...), ...).
-        if self._at_keyword("within", "between", "inside", "outside"):
+        wrapped = atom if is_any else Quantifier(kind="every", child=atom)
+        # If an inside/outside window follows, attach it to the quantified atom.
+        if self._at_keyword("inside", "outside"):
             return self._parse_within(child=wrapped)
         return wrapped
 
     def _parse_not(self) -> ASTNode:
-        if self._at_keyword("not"):
+        if self._at_keyword("not", "never"):
             self._advance()
             child = self._parse_prefix()
             return NotExpr(child)
         return self._parse_prefix()
 
     def _parse_prefix(self) -> ASTNode:
+        expr = self._parse_prefix_core()
+        return self._maybe_attach_shift(expr)
+
+    def _maybe_attach_shift(self, expr: ASTNode) -> ASTNode:
+        """Consume any trailing `('+'|'-') INT 'days'` and wrap in ShiftExpr.
+
+        Chains multiple shifts (`1st Y - 30 days - 7 days`). Validates at
+        each step that the child is a single-date expression; raises
+        `TQuerySyntaxError` otherwise.
+        """
+        while self._lookahead_is_shift():
+            sign = 1 if self._advance().value == "+" else -1
+            n = self._advance().value
+            self._advance()  # 'days'
+            if not _is_single_date_expr(expr):
+                raise self._error(
+                    "'± N days' requires a single-date anchor "
+                    "(an ordinal like `1st K51` or `-1st event`)"
+                )
+            expr = ShiftExpr(expr, sign * n)
+        return expr
+
+    def _lookahead_is_shift(self) -> bool:
+        if not (self._at_type(TokenType.OP) and self._peek().value in ("+", "-")):
+            return False
+        if self.pos + 2 >= len(self.tokens):
+            return False
+        t1 = self.tokens[self.pos + 1]
+        t2 = self.tokens[self.pos + 2]
+        return (
+            t1.type == TokenType.INT
+            and t2.type == TokenType.KEYWORD
+            and t2.value == "days"
+        )
+
+    def _parse_prefix_core(self) -> ASTNode:
         # Count range prefix: 2-5 of K50
         if self._at_type(TokenType.INT_RANGE):
             raw = self._advance().value  # "2-5"
@@ -326,6 +375,19 @@ class Parser:
             child = self._parse_within()
             return PrefixExpr("ordinal", n, child)
 
+        # Negative ordinal: `-Nth X` means the Nth-from-last match per person.
+        if (self._at_type(TokenType.OP) and self._peek().value == "-"
+            and self.pos + 1 < len(self.tokens)
+            and self.tokens[self.pos + 1].type == TokenType.ORDINAL):
+            self._advance()  # consume '-'
+            n = self._advance().value
+            if n == 0:
+                raise self._error("Ordinal cannot be -0")
+            if self._at_keyword("of"):
+                self._advance()
+            child = self._parse_within()
+            return PrefixExpr("ordinal", -n, child)
+
         if self._at_keyword("first", "last"):
             kind = self._advance().value
             tok = self._peek()
@@ -340,58 +402,134 @@ class Parser:
         return self._parse_within()
 
     def _parse_within(self, child: ASTNode | None = None) -> ASTNode:
+        """Parse `inside`/`outside` constructs attached to a child atom.
+
+        Grammar:
+            inside_expr ::= atom ('inside'|'outside') tail
+            tail        ::= INT ['to' INT] ('days'|'events') [dir ['of'] ref]
+                          | EXPR ['and' EXPR]
+            dir         ::= 'before' | 'after' | 'around'
+
+        Notes:
+            - `inside N days [dir [Y]]` — time window, direction and ref
+              both optional.
+            - `inside N events dir Y` — event window, direction and ref
+              required.
+            - `inside EXPR` — positional span. `inside EXPR and EXPR` —
+              positional bounds.
+            - `outside …` gives the row-level complement (restricted to
+              evaluable persons) for each of the above.
+        """
         if child is None:
             child = self._parse_atom()
-        if self._at_keyword("within", "between"):
-            keyword = self._advance().value
+        if not self._at_keyword("inside", "outside"):
+            return child
 
-            tok = self._peek()
-            if tok.type != TokenType.INT:
-                raise self._error(f"Expected number of days after '{keyword}', got {tok.value!r}")
+        keyword = self._advance().value
+        outside = keyword == "outside"
 
-            if keyword == "between":
-                # between M and N days (direction? (of? ref)?)
-                min_days = self._advance().value
-                self._expect_keyword("and")
-                tok = self._peek()
-                if tok.type != TokenType.INT:
-                    raise self._error(f"Expected upper bound after 'and', got {tok.value!r}")
-                max_days = self._advance().value
-            else:
-                # within N days
-                min_days = 0
-                max_days = self._advance().value
+        tok = self._peek()
 
-            self._expect_keyword("days")
+        # Numeric form: `inside [-]N [to [-]M] days/events ...`
+        # A leading '-' is allowed (consumed as an OP token by the lexer).
+        if tok.type == TokenType.INT or (
+            tok.type == TokenType.OP and tok.value == "-"
+            and self.pos + 1 < len(self.tokens)
+            and self.tokens[self.pos + 1].type == TokenType.INT
+        ):
+            first = self._parse_signed_int()
+            min_val = 0
+            max_val = first
+            if self._at_keyword("to"):
+                self._advance()
+                min_val = first
+                max_val = self._parse_signed_int()
+            return self._finish_numeric_inside(
+                child, min_val, max_val, outside
+            )
 
-            direction: str | None = None
-            ref: ASTNode | None = None
+        # EXPR form: positional span or positional bounds
+        bound_start = self._parse_prefix()
+        if self._at_keyword("and"):
+            self._advance()
+            bound_end = self._parse_prefix()
+            return BetweenExpr(child, bound_start, bound_end, outside=outside)
+        return WithinSpanExpr(child, bound_start, outside=outside)
 
-            if self._at_keyword("before", "after", "around"):
-                direction = self._advance().value
-                if self._at_keyword("of"):
-                    self._advance()
-                rhs_q = self._try_quantified()
-                ref = rhs_q if rhs_q is not None else self._parse_prefix()
+    def _parse_signed_int(self) -> int:
+        """Consume `[-]INT` and return the signed value."""
+        negate = False
+        tok = self._peek()
+        if tok.type == TokenType.OP and tok.value == "-":
+            self._advance()
+            negate = True
+        tok = self._peek()
+        if tok.type != TokenType.INT:
+            raise self._error(f"Expected integer, got {tok.value!r}")
+        value = self._advance().value
+        return -value if negate else value
 
-            return WithinExpr(child, max_days, min_days, direction, ref)
+    def _finish_numeric_inside(
+        self,
+        child: ASTNode,
+        min_val: int,
+        max_val: int,
+        outside: bool,
+    ) -> ASTNode:
+        """Finish parsing the unit + direction tail of a numeric inside/outside."""
+        unit_tok = self._peek()
+        if unit_tok.type != TokenType.KEYWORD or unit_tok.value not in (
+            "days", "event", "events",
+        ):
+            raise self._error(
+                f"Expected 'days' or 'events', got {unit_tok.value!r}"
+            )
+        unit_raw = self._advance().value
+        unit = "events" if unit_raw in ("event", "events") else unit_raw
 
-        if self._at_keyword("inside", "outside"):
-            inside = self._advance().value == "inside"
-            tok = self._peek()
-            if tok.type != TokenType.INT:
-                raise self._error(f"Expected number of events, got {tok.value!r}")
-            n_events = self._advance().value
-            self._expect_keyword("events")
-
-            direction_tok = self._expect_keyword("before", "after", "around")
+        direction: str | None = None
+        ref: ASTNode | None = None
+        if self._at_keyword("before", "after", "around"):
+            direction = self._advance().value
             if self._at_keyword("of"):
                 self._advance()
             rhs_q = self._try_quantified()
             ref = rhs_q if rhs_q is not None else self._parse_prefix()
-            return InsideExpr(child, inside, n_events, direction_tok.value, ref)
 
-        return child
+        # Sign validation: negatives are only allowed with `around`.
+        has_negative = min_val < 0 or max_val < 0
+        if has_negative and direction != "around":
+            raise self._error(
+                "Negative offsets are only allowed with 'around' "
+                "(use 'before' with a positive number instead)"
+            )
+        if min_val > max_val:
+            raise self._error(
+                f"Range must be ascending: got {min_val} to {max_val}"
+            )
+
+        if unit == "days":
+            return WithinExpr(
+                child, max_val, min_val, direction, ref, outside=outside
+            )
+        # events
+        if direction is None or ref is None:
+            raise self._error(
+                "Event window requires a direction (before/after/around) "
+                "and a reference expression"
+            )
+        # Shorthand `inside N events after Y` means positions +1..+N
+        # (Y itself is excluded). With an explicit range, both bounds are
+        # taken literally, including sign for `around`.
+        if min_val == 0 and max_val > 0 and direction != "around":
+            min_events = 1
+            max_events = max_val
+        else:
+            min_events = min_val
+            max_events = max_val
+        return InsideExpr(
+            child, not outside, min_events, max_events, direction, ref
+        )
 
     def _parse_atom(self) -> ASTNode:
         tok = self._peek()
@@ -404,6 +542,11 @@ class Parser:
                 raise self._error("Expected ')'")
             self._advance()
             return node
+
+        # Universal-row atom: `event` or `events` matches every row.
+        if self._at_keyword("event", "events"):
+            self._advance()
+            return EventAtom()
 
         # Try column comparison: IDENT OP NUMBER
         if self._is_comparison_ahead():
@@ -418,8 +561,10 @@ class Parser:
             return False
         t0 = self.tokens[self.pos]
         t1 = self.tokens[self.pos + 1]
-        # Must be: CODE/IDENT (non-keyword), then OP
+        # Must be: CODE/IDENT (non-keyword), then a comparison OP (not `-`).
         if t0.type == TokenType.CODE and t1.type == TokenType.OP:
+            if t1.value not in (">", "<", ">=", "<=", "==", "!="):
+                return False
             # Make sure the CODE isn't a keyword being used as ident
             if t0.value.lower() not in KEYWORDS:
                 return True
@@ -499,6 +644,18 @@ class Parser:
             return self._advance().value
 
         raise self._error(f"Expected a code expression, got {tok.value!r}")
+
+
+def _is_single_date_expr(node: ASTNode) -> bool:
+    """True if `node` is known to produce a single date per person.
+
+    Used to validate the child of a `± N days` shift suffix.
+    """
+    if isinstance(node, ShiftExpr):
+        return True
+    if isinstance(node, PrefixExpr) and node.kind == "ordinal":
+        return True
+    return False
 
 
 def parse(expr: str) -> ASTNode:

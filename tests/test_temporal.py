@@ -189,17 +189,18 @@ class TestInsideOutside:
     def test_inside_2_events_after(self, idf):
         child = idf["code"].isin(["B", "C", "D", "E"])
         ref = idf["code"] == "A"
+        # min_events=1, max_events=2 → positions +1, +2 relative to A
         result = eval_inside_outside(
-            idf, child, ref, True, 2, "after", "pid"
+            idf, child, ref, True, 1, 2, "after", "pid"
         )
-        # A is at event 0. Inside 2 events after = events 1, 2 (B, C)
+        # A is at event 0. Inside 1..2 events after = events 1, 2 (B, C)
         assert list(result) == [False, True, True, False, False]
 
     def test_outside_2_events_after(self, idf):
         child = idf["code"].isin(["B", "C", "D", "E"])
         ref = idf["code"] == "A"
         result = eval_inside_outside(
-            idf, child, ref, False, 2, "after", "pid"
+            idf, child, ref, False, 1, 2, "after", "pid"
         )
         # Outside = events 3, 4 (D, E)
         assert list(result) == [False, False, False, True, True]

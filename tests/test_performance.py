@@ -56,7 +56,7 @@ class TestPerformance:
 
     def test_within_100k(self, large_df):
         start = time.perf_counter()
-        result = tquery(large_df, "K50 within 365 days after K51")
+        result = tquery(large_df, "K50 inside 365 days after K51")
         elapsed = time.perf_counter() - start
         assert elapsed < 5.0, f"Within query took {elapsed:.2f}s (expected <5s)"
 

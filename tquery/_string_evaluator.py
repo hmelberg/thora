@@ -19,15 +19,19 @@ import pandas as pd
 
 from tquery._ast import (
     ASTNode,
+    BetweenExpr,
     BinaryLogical,
     CodeAtom,
     ComparisonAtom,
+    EventAtom,
     InsideExpr,
     NotExpr,
     PrefixExpr,
     RangePrefixExpr,
+    ShiftExpr,
     TemporalExpr,
     WithinExpr,
+    WithinSpanExpr,
 )
 from tquery._codes import collect_unique_codes, expand_codes
 from tquery._parser import parse
@@ -247,6 +251,10 @@ class StringEvaluator:
     def _dispatch(self, node: ASTNode) -> StringMatch:
         if isinstance(node, CodeAtom):
             return self._eval_code(node)
+        elif isinstance(node, EventAtom):
+            raise TQueryStringError(
+                "`event`/`events` atom is not supported by the string evaluator"
+            )
         elif isinstance(node, ComparisonAtom):
             return self._eval_comparison(node)
         elif isinstance(node, PrefixExpr):
@@ -263,6 +271,18 @@ class StringEvaluator:
             return self._eval_within(node)
         elif isinstance(node, InsideExpr):
             return self._eval_inside(node)
+        elif isinstance(node, BetweenExpr):
+            raise TQueryStringError(
+                "`between EXPR and EXPR` is not supported by the string evaluator"
+            )
+        elif isinstance(node, WithinSpanExpr):
+            raise TQueryStringError(
+                "`within EXPR` (positional span) is not supported by the string evaluator"
+            )
+        elif isinstance(node, ShiftExpr):
+            raise TQueryStringError(
+                "Shifted anchor dates (`± N days`) are not supported by the string evaluator"
+            )
         else:
             raise TypeError(f"Unknown AST node type: {type(node)}")
 
@@ -311,8 +331,11 @@ class StringEvaluator:
                 if count == node.n:
                     positions[pid] = pos
             elif node.kind == "ordinal":
-                if count >= node.n:
+                if node.n > 0 and count >= node.n:
                     positions[pid] = frozenset({sorted_pos[node.n - 1]})
+                elif node.n < 0 and count >= abs(node.n):
+                    # -1 = last, -2 = 2nd-to-last
+                    positions[pid] = frozenset({sorted_pos[node.n]})
             elif node.kind == "first":
                 if count > 0:
                     positions[pid] = frozenset(sorted_pos[:node.n])
@@ -479,15 +502,18 @@ class StringEvaluator:
                 is_inside = False
                 for rp in ref_pos:
                     dist = cp - rp
-                    if node.direction == "after" and 0 < dist <= node.n_events:
-                        is_inside = True
-                        break
-                    elif node.direction == "before" and -node.n_events <= dist < 0:
-                        is_inside = True
-                        break
-                    elif node.direction == "around" and 0 < abs(dist) <= node.n_events:
-                        is_inside = True
-                        break
+                    if node.direction == "after":
+                        if node.min_events <= dist <= node.max_events:
+                            is_inside = True
+                            break
+                    elif node.direction == "before":
+                        if -node.max_events <= dist <= -node.min_events:
+                            is_inside = True
+                            break
+                    else:  # around: signed offsets
+                        if node.min_events <= dist <= node.max_events:
+                            is_inside = True
+                            break
 
                 if node.inside and is_inside:
                     matched.add(cp)

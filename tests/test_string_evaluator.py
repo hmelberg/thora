@@ -285,16 +285,16 @@ class TestWithinEval:
     def test_within_order_raises(self, order_strings, codes):
         with pytest.raises(TQueryStringError, match="within"):
             string_query(
-                "L04AB02 within 30 days after L04AB04",
+                "L04AB02 inside 30 days after L04AB04",
                 order_strings, codes,
             )
 
     def test_within_time_mode(self, time_strings, codes):
-        # step=90, within 90 days after → max 1 position distance
-        # P1: i at {0,2}, a at {2}. i within 1 pos after a: pos 3 (doesn't exist)
-        # P2: i at {1}, a at {0}. i within 1 pos after a: pos 1 is 1 away → YES
+        # step=90, inside 90 days after → max 1 position distance
+        # P1: i at {0,2}, a at {2}. i inside 1 pos after a: pos 3 (doesn't exist)
+        # P2: i at {1}, a at {0}. i inside 1 pos after a: pos 1 is 1 away → YES
         result = string_query(
-            "L04AB02 within 90 days after L04AB04",
+            "L04AB02 inside 90 days after L04AB04",
             time_strings, codes, mode="time", step=90,
         )
         assert result == {"P2"}

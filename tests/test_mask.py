@@ -108,8 +108,8 @@ def test_result_mask_invalid_level(simple_df):
 
 def test_mask_within_days(within_df):
     # K51 within 30 days after K50: Person 1 only (19 days)
-    m = within_df.tq.mask("K51 within 30 days after K50")
+    m = within_df.tq.mask("K51 inside 30 days after K50")
     assert m.dtype == bool
     assert m.index.equals(within_df.index)
     # Standalone expectation via tquery()
-    assert m.equals(tquery(within_df, "K51 within 30 days after K50").rows)
+    assert m.equals(tquery(within_df, "K51 inside 30 days after K50").rows)

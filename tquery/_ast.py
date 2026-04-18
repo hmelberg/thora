@@ -19,6 +19,16 @@ class CodeAtom:
 
 
 @dataclass(frozen=True, slots=True)
+class EventAtom:
+    """Matches every row in the timeline.
+
+    Spelled `event` or `events` in the DSL. Lets positional selectors
+    (`5th event`, `last 5 events`) and temporal operators (`before 5th
+    event`) attach to the timeline itself rather than a code pattern.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class ComparisonAtom:
     """A column comparison like 'glucose > 8'."""
     column: str
@@ -73,24 +83,78 @@ class TemporalExpr:
 class WithinExpr:
     """Time-window constraint: child events within a day range of ref events.
 
-    For 'within N days': min_days=0, days=N.
-    For 'between M and N days': min_days=M, days=N.
+    For 'inside N days': min_days=0, days=N.
+    For 'inside M to N days': min_days=M, days=N.
+    `outside=True` flips to the row-level complement restricted to
+    evaluable persons.
     """
     child: ASTNode
     days: int
     min_days: int = 0
     direction: str | None = None  # 'before', 'after', 'around', or None
     ref: ASTNode | None = None
+    outside: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class InsideExpr:
-    """Event-window constraint: child events inside/outside N events of ref."""
+    """Event-window constraint: child events inside/outside an event
+    window relative to a reference.
+
+    The window is the closed integer range ``[min_events, max_events]``
+    in row-positions offset from each ref row (positive = after, negative
+    = before). Shorthand `inside N events after Y` stores
+    ``min_events=1, max_events=N``.
+    """
     child: ASTNode
     inside: bool  # True = inside, False = outside
-    n_events: int
+    min_events: int
+    max_events: int
     direction: str  # 'before', 'after', 'around'
     ref: ASTNode
+
+
+@dataclass(frozen=True, slots=True)
+class BetweenExpr:
+    """Positional-bounds window.
+
+    Child rows whose date falls in the per-person closed interval
+    ``[min(bound_start dates), max(bound_end dates)]``. Spelled in the DSL
+    as ``CHILD inside EXPR and EXPR`` (e.g., ``K50 inside 1st K51 and
+    5th K51``). `outside=True` gives the row-level complement.
+    """
+    child: ASTNode
+    bound_start: ASTNode
+    bound_end: ASTNode
+    outside: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WithinSpanExpr:
+    """Positional-span window.
+
+    Child rows whose date falls in the per-person span
+    ``[min(ref dates), max(ref dates)]`` — i.e., the date range covered
+    by a single multi-row selector. Spelled as ``CHILD inside EXPR``
+    (e.g., ``K50 inside last 5 events``). `outside=True` gives the
+    row-level complement.
+    """
+    child: ASTNode
+    ref: ASTNode
+    outside: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ShiftExpr:
+    """Per-person synthetic date: child's date shifted by offset_days.
+
+    ``child`` must be a single-date expression (ordinal selector or another
+    ShiftExpr). ``offset_days`` is signed: negative = earlier, positive =
+    later. Only meaningful as a reference in temporal / window / bounds
+    positions; evaluation in other positions raises.
+    """
+    child: ASTNode
+    offset_days: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +173,7 @@ class Quantifier:
 # Union type for all AST nodes
 ASTNode = Union[
     CodeAtom,
+    EventAtom,
     ComparisonAtom,
     PrefixExpr,
     RangePrefixExpr,
@@ -116,6 +181,9 @@ ASTNode = Union[
     BinaryLogical,
     TemporalExpr,
     WithinExpr,
+    WithinSpanExpr,
     InsideExpr,
+    BetweenExpr,
+    ShiftExpr,
     Quantifier,
 ]

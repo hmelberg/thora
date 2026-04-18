@@ -19,6 +19,8 @@ def eval_before_after(
     date_col: str,
     every_left: bool = False,
     every_right: bool = False,
+    left_offset_days: int = 0,
+    right_offset_days: int = 0,
 ) -> pd.Series:
     """Person-level temporal comparison: does left occur before/after right?
 
@@ -49,11 +51,13 @@ def eval_before_after(
 
     pid = df[pid_col]
     dates = df[date_col]
+    left_shift = pd.Timedelta(days=left_offset_days)
+    right_shift = pd.Timedelta(days=right_offset_days)
 
     if op == "simultaneously":
-        # Build per-person date sets for both sides
-        left_dates = dates[left_mask].groupby(pid[left_mask]).apply(set)
-        right_dates = dates[right_mask].groupby(pid[right_mask]).apply(set)
+        # Build per-person date sets for both sides (offsets applied)
+        left_dates = (dates[left_mask] + left_shift).groupby(pid[left_mask]).apply(set)
+        right_dates = (dates[right_mask] + right_shift).groupby(pid[right_mask]).apply(set)
         common = left_dates.index.intersection(right_dates.index)
         if common.empty:
             return pd.Series(False, index=df.index)
@@ -84,10 +88,10 @@ def eval_before_after(
     if common_pids.empty:
         return pd.Series(False, index=df.index)
 
-    left_min = left_min.reindex(common_pids)
-    left_max = left_max.reindex(common_pids)
-    right_min = right_min.reindex(common_pids)
-    right_max = right_max.reindex(common_pids)
+    left_min = left_min.reindex(common_pids) + left_shift
+    left_max = left_max.reindex(common_pids) + left_shift
+    right_min = right_min.reindex(common_pids) + right_shift
+    right_max = right_max.reindex(common_pids) + right_shift
 
     # NOTE: the historical default for `K50 before K51` is "first K50 < first K51",
     # which mathematically corresponds to "∃ K50 (the earliest one) ∀ K51, k50 < k51"
@@ -115,6 +119,71 @@ def eval_before_after(
     return pid.isin(matching_pids) & left_mask
 
 
+def _eval_around_signed(
+    df: pd.DataFrame,
+    child_mask: pd.Series,
+    ref_mask: pd.Series,
+    min_days: int,
+    max_days: int,
+    pid_col: str,
+    date_col: str,
+    ref_offset_days: int = 0,
+) -> pd.Series:
+    """Existential signed window for `around`: signed_diff in [min_days, max_days].
+
+    Uses both backward and forward asofs so rows on either side of ref
+    can match. Complete when the window spans zero (min_days <= 0 <=
+    max_days); for wholly-negative or wholly-positive signed windows, one
+    of the asof tolerances collapses and only the relevant side is used.
+    """
+    pid = df[pid_col]
+    dates = df[date_col]
+
+    child_df = pd.DataFrame({
+        "pid": pid[child_mask].values,
+        "date": dates[child_mask].values,
+        "orig_idx": child_mask.index[child_mask],
+    }).sort_values("date")
+
+    ref_df = pd.DataFrame({
+        "pid": pid[ref_mask].values,
+        "ref_date": dates[ref_mask].values + pd.Timedelta(days=ref_offset_days),
+    }).sort_values("ref_date")
+
+    has_match = pd.Series(False, index=child_df.index)
+
+    # Backward asof: finds the most recent ref at or before each child
+    # (signed_diff >= 0). Tolerance = max_days (upper bound).
+    if max_days >= 0:
+        bw = pd.merge_asof(
+            child_df, ref_df,
+            by="pid", left_on="date", right_on="ref_date",
+            direction="backward",
+            tolerance=pd.Timedelta(days=max_days),
+        )
+        bw_diff = (bw["date"] - bw["ref_date"]).dt.days
+        bw_match = bw["ref_date"].notna() & (bw_diff >= min_days) & (bw_diff <= max_days)
+        has_match = has_match | bw_match.values
+
+    # Forward asof: finds the earliest ref at or after each child
+    # (signed_diff <= 0). Tolerance = -min_days (magnitude).
+    if min_days <= 0:
+        fw = pd.merge_asof(
+            child_df, ref_df,
+            by="pid", left_on="date", right_on="ref_date",
+            direction="forward",
+            tolerance=pd.Timedelta(days=-min_days),
+        )
+        fw_diff = (fw["date"] - fw["ref_date"]).dt.days
+        fw_match = fw["ref_date"].notna() & (fw_diff >= min_days) & (fw_diff <= max_days)
+        has_match = has_match | fw_match.values
+
+    matched_idx = child_df.loc[has_match.values, "orig_idx"].values
+    result = pd.Series(False, index=df.index)
+    result.iloc[result.index.get_indexer(matched_idx)] = True
+    return result
+
+
 def eval_within_days(
     df: pd.DataFrame,
     child_mask: pd.Series,
@@ -126,6 +195,7 @@ def eval_within_days(
     min_days: int = 0,
     every_left: bool = False,
     every_right: bool = False,
+    ref_offset_days: int = 0,
 ) -> pd.Series:
     """Row-level: mark child rows within a day range of reference events.
 
@@ -149,13 +219,25 @@ def eval_within_days(
     dates = df[date_col]
 
     if ref_mask is None:
-        # No reference: within day range of first event per person
+        # No reference: within day range of first event per person.
+        # (ref_offset_days ignored here — no ref to shift.)
         first_date = dates.groupby(pid).transform("first")
         diff = (dates - first_date).dt.days.abs()
         return child_mask & (diff >= min_days) & (diff <= days)
 
     if not ref_mask.any():
         return pd.Series(False, index=df.index)
+
+    ref_shift = pd.Timedelta(days=ref_offset_days)
+
+    # Signed-around: asymmetric window `inside min_days to days around Y`
+    # where min_days can be negative. Existential-only; universal modes
+    # fall through to the existing logic (which uses unsigned |diff|).
+    if direction == "around" and min_days < 0 and not (every_left or every_right):
+        return _eval_around_signed(
+            df, child_mask, ref_mask, min_days, days, pid_col, date_col,
+            ref_offset_days=ref_offset_days,
+        )
 
     # ----- LHS-anchored matching: for each child, find nearest ref in window -----
     # (Existing existential logic; also used for the `every_left` check.)
@@ -167,7 +249,7 @@ def eval_within_days(
 
     ref_df = pd.DataFrame({
         "pid": pid[ref_mask].values,
-        "ref_date": dates[ref_mask].values,
+        "ref_date": dates[ref_mask].values + ref_shift,
     }).sort_values("ref_date")
 
     if direction == "after":
@@ -227,7 +309,7 @@ def eval_within_days(
         # merge_asof requires sorted left side
         ref_lookup = pd.DataFrame({
             "pid": pid[ref_mask].values,
-            "ref_date": dates[ref_mask].values,
+            "ref_date": dates[ref_mask].values + ref_shift,
         }).sort_values("ref_date")
         child_lookup = pd.DataFrame({
             "pid": pid[child_mask].values,
@@ -260,14 +342,21 @@ def eval_inside_outside(
     child_mask: pd.Series,
     ref_mask: pd.Series,
     inside: bool,
-    n_events: int,
+    min_events: int,
+    max_events: int,
     direction: str,
     pid_col: str,
 ) -> pd.Series:
-    """Row-level: mark child rows inside/outside N events of reference events.
+    """Row-level: mark child rows inside/outside an event-count window.
 
-    'inside 5 events after K51' means: within the next 5 events (rows)
-    after any K51 occurrence for that person.
+    The window is the closed integer range ``[min_events, max_events]``
+    in row offsets from each ref row. For example,
+    ``inside 1 to 5 events after Y`` ⇒ min_events=1, max_events=5,
+    direction="after"; `direction` of "before" mirrors the offsets
+    (offset −k is |k| rows earlier); `around` uses signed offsets
+    directly (so `inside -3 to 5 events around Y` is positions −3..+5).
+
+    `inside=False` flips to the row-level complement.
     """
     if not child_mask.any() or not ref_mask.any():
         return pd.Series(False, index=df.index)
@@ -282,7 +371,7 @@ def eval_inside_outside(
     ref_positions = event_num[ref_mask]
     ref_pids = pid[ref_mask]
 
-    # For each person, check if child events are within n_events
+    # For each person, check if child events fall in the window
     for p in ref_pids.unique():
         p_mask = pid == p
         p_event_num = event_num[p_mask]
@@ -292,21 +381,31 @@ def eval_inside_outside(
         in_window = pd.Series(False, index=p_event_num.index)
         for ref_pos in p_ref_positions:
             if direction == "after":
+                # offsets +min_events..+max_events relative to ref
+                lo = ref_pos + min_events
+                hi = ref_pos + max_events
                 in_window = in_window | (
-                    (p_event_num > ref_pos) & (p_event_num <= ref_pos + n_events)
+                    (p_event_num >= lo) & (p_event_num <= hi)
                 )
             elif direction == "before":
+                # offsets −max_events..−min_events (i.e., positions
+                # ref-max..ref-min going backwards)
+                lo = ref_pos - max_events
+                hi = ref_pos - min_events
                 in_window = in_window | (
-                    (p_event_num < ref_pos) & (p_event_num >= ref_pos - n_events)
+                    (p_event_num >= lo) & (p_event_num <= hi)
                 )
-            else:  # around
+            else:  # around: signed offsets
+                lo = ref_pos + min_events
+                hi = ref_pos + max_events
                 in_window = in_window | (
-                    (p_event_num - ref_pos).abs() <= n_events
+                    (p_event_num >= lo) & (p_event_num <= hi)
                 )
 
         if inside:
-            result[p_mask] = p_child & in_window
+            matched = (p_child & in_window).values
         else:
-            result[p_mask] = p_child & ~in_window
+            matched = (p_child & ~in_window).values
+        result.loc[p_mask.values] = matched
 
     return result

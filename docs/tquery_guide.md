@@ -14,7 +14,7 @@ These questions are conceptually simple but surprisingly difficult to express in
 import tquery
 
 # Natural language → tquery expression → answer
-tquery.tquery(df, 'min 2 of J01 within 90 days before 1st of surgery_code').count
+tquery.tquery(df, 'min 2 of J01 inside 90 days before 1st of surgery_code').count
 # → 234
 ```
 
@@ -95,18 +95,42 @@ df.tq('K50 and K52').pids           # {1, 2}
 
 | Expression | Meaning |
 |-----------|---------|
-| `K50 within 90 days` | K50 within 90 days of first event per person |
-| `K50 within 90 days after K51` | K50 within 90 days following any K51 |
-| `K50 within 30 days before K51` | K50 within 30 days preceding any K51 |
-| `K50 within 60 days around K51` | K50 within 60 days in either direction |
-| `K50 between 30 and 90 days after K51` | K50 between 30 and 90 days after K51 (excludes first 30 days) |
+| `K50 inside 90 days` | K50 within 90 days of first event per person |
+| `K50 inside 90 days after K51` | K50 within 90 days following any K51 |
+| `K50 inside 30 days before K51` | K50 within 30 days preceding any K51 |
+| `K50 inside 60 days around K51` | K50 within 60 days in either direction (shorthand for `-60 to 60`) |
+| `K50 inside 30 to 90 days after K51` | K50 between 30 and 90 days after K51 (excludes the first 30 days) |
+| `K50 inside -5 to 20 days around K51` | Asymmetric window: 5 days before to 20 days after K51 |
+| `K50 outside 30 days after K51` | Row-level complement of the positive form |
+| `K50 outside 5 to 30 days after K51` | Row-level complement of the range form |
+
+Negative offsets are only valid with `around`; `inside -5 days after K51` is a syntax error. Range bounds must be ascending.
 
 #### Event Windows
 
 | Expression | Meaning |
 |-----------|---------|
 | `K50 inside 5 events after K51` | K50 within the next 5 events after K51 |
-| `K50 outside 10 events before K51` | K50 not within 10 events before K51 |
+| `K50 inside 3 to 5 events after K51` | K50 falling 3–5 events after K51 (range form) |
+| `K50 outside 10 events before K51` | Row-level complement: K50 not in the 10 events before K51 |
+| `K50 inside last 5 events` | K50 falling within the last 5 rows of the person's timeline |
+| `K50 outside last 5 events` | Row-level complement of the positional span |
+| `K50 inside 1st K51 and 5th K51` | K50 between the first and fifth K51 events |
+| `K50 outside 1st K51 and 5th K51` | Row-level complement of the positional span |
+
+#### The `event` / `events` Atom
+
+`event` (or its plural `events`) is a universal-row atom — it stands for "any row in the timeline" and can be combined with positional, counting, and temporal constructs:
+
+| Expression | Meaning |
+|-----------|---------|
+| `5th event` | The 5th row per person |
+| `last 5 events` | The last 5 rows per person |
+| `first 3 of events` | The first 3 rows per person |
+| `min 3 of event` | Persons with at least 3 rows |
+| `K50 before 5th event` | K50 occurs before the 5th event per person |
+| `K50 after 3rd event` | K50 occurs after the 3rd event per person |
+| `K50 inside last 5 events` | K50 within the last 5 events per person |
 
 #### Quantifiers (Counts)
 
@@ -126,6 +150,12 @@ df.tq('K50 and K52').pids           # {1, 2}
 | `2nd of K50` | Only the second K50 event per person |
 | `first 3 of K50` | The first 3 K50 events per person |
 | `last 2 of K50` | The last 2 K50 events per person |
+| `-1st K50` | The last K50 event per person (negative ordinal) |
+| `-2nd K50` | The second-to-last K50 event per person |
+| `-3rd event` | The third-to-last row per person |
+| `-5th of K50` | Equivalent to `5th from the end of K50` |
+
+Negative ordinals count from the end and compose with windows, e.g. `K50 inside 60 days before -1st K51`.
 
 #### Universal / Existential Quantifiers
 
@@ -133,9 +163,12 @@ df.tq('K50 and K52').pids           # {1, 2}
 |-----------|---------|
 | `any K50 after K51` | Default — same as `K50 after K51` (sugar) |
 | `K50 after every K51` | Every K51 has a K50 after it (and K51 non-empty) |
+| `K50 after each K51` | Synonym for `K50 after every K51` (reads better on the ref side) |
 | `every K50 before K51` | Every K50 has a K51 after it |
+| `always K50 before K51` | Synonym for `every K50 before K51` (reads better on the subject side) |
 | `every K50 after every K51` | All K50s strictly follow all K51s |
-| `K50 within 100 days after every K51` | Every K51 followed by a K50 within 100 days |
+| `K50 inside 100 days after every K51` | Every K51 followed by a K50 within 100 days |
+| `never K50 inside 3 events after K51` | Synonym for `not (K50 inside 3 events after K51)` |
 
 #### Logical Operators
 
@@ -164,7 +197,7 @@ Expressions can be freely combined using parentheses:
 '(K50 or K51) before K52'
 
 # At least 2 glucose readings above 8, within 60 days
-'min 2 of glucose>8 within 60 days'
+'min 2 of glucose>8 inside 60 days'
 
 # First K50 before first K51
 '1st of K50 before 1st of K51'
@@ -176,31 +209,42 @@ Expressions can be freely combined using parentheses:
 'not K52 and K50 before K51'
 
 # Statin within 30-365 days after MI (washout period)
-'C10AA between 30 and 365 days after I21'
+'C10AA inside 30 to 365 days after I21'
 ```
 
-### Quantifiers: `every` and `any`
+### Quantifiers: `every`, `any`, `each`, `always`, `never`
 
 By default, temporal queries are existential — `K50 after K51` matches a person if there is *some* K50 that occurs after *some* K51. To express universal claims like "every K51 is followed by a K50 within 100 days", prefix the relevant atom with `every`. The dual `any` is the explicit form of the default and is purely sugar.
 
+Three additional keywords are pure lexical sugar, aimed at making the query read more naturally:
+
+- `each Y` is a synonym for `every Y` (reads more naturally on the ref side: `K50 after each K51`).
+- `always X` is a synonym for `every X` (reads more naturally on the subject side: `always K50 before K51`).
+- `never X` is a synonym for `not X` (applied to a whole clause: `never K50 inside 3 events after K51`).
+
 ```python
 # Every diagnosis K51 is followed by a treatment K50 within 100 days
-'K50 within 100 days after every K51'
+'K50 inside 100 days after every K51'
+'K50 inside 100 days after each K51'    # synonym
 
 # Every K50 the patient has is preceded by a K51 within 30 days (e.g. every
 # control visit was after a recent prescription)
-'every K50 within 30 days after K51'
+'every K50 inside 30 days after K51'
+'always K50 inside 30 days after K51'   # synonym
 
 # All K50s strictly follow all K51s — no overlap, K51s came first
 'every K50 after every K51'
 
 # Explicit form of the default — semantically identical to `K50 after K51`
 'any K50 after any K51'
+
+# `never` negates a whole clause (sugar for `not (...)`)
+'never K50 inside 3 events after K51'
 ```
 
 **Vacuous truth is excluded.** `every K51 ...` requires the person to have at least one K51 event. A patient with zero K51s does *not* satisfy `K50 after every K51`.
 
-**Restrictions.** `every`/`any` may only precede a bare code expression or `@variable`. They cannot be combined with parentheses, counting prefixes (`min`/`max`/`exactly`/`first`/`last`/ordinals), or `not`. They also require a surrounding temporal context — `every K50` on its own is a syntax error.
+**Restrictions.** `every`/`any`/`each`/`always` may only precede a bare code expression or `@variable`. They cannot be combined with parentheses, counting prefixes (`min`/`max`/`exactly`/`first`/`last`/ordinals), or `not`. They also require a surrounding temporal context — `every K50` on its own is a syntax error.
 
 **Equivalences with the existing default.** Because the historical default for `K50 before K51` already enforces "the first K50 precedes every K51" (i.e. `min(K50) < min(K51)`), adding `every K51` on the *right* of `before` is a no-op. By symmetry, `every K50 after K51` equals the default. The non-redundant additions are:
 
@@ -215,10 +259,10 @@ Inside a time window, the universal reading on either side adds real constraints
 
 ```python
 # Every K51 is followed by a K50 within 100 days (cohort coverage check)
-'K50 within 100 days after every K51'
+'K50 inside 100 days after every K51'
 
 # Every K50 has a K51 in the 100 days before it (every event is "explained")
-'every K50 within 100 days after K51'
+'every K50 inside 100 days after K51'
 ```
 
 ### Operator Precedence
@@ -230,7 +274,7 @@ From lowest (evaluated last) to highest (evaluated first):
 3. `before` / `after` / `simultaneously`
 4. `not`
 5. `min` / `max` / `exactly` / ordinals / `first` / `last` / count ranges
-6. `within` / `between` / `inside` / `outside`
+6. `inside` / `outside` (time windows, event windows, positional spans)
 7. Atoms (codes, comparisons, parenthesized sub-expressions)
 
 Use parentheses to override precedence when needed:
@@ -242,6 +286,54 @@ Use parentheses to override precedence when needed:
 # With parens: (K51 or K52) before K50  — what you probably meant
 '(K51 or K52) before K50'
 ```
+
+### Shifted Anchor Dates
+
+A reference selector can be shifted by a number of days, which is the cleanest way to express "more than N days apart" queries:
+
+```python
+# First K51 occurred more than 100 days before the first K50
+'1st K51 before 1st K50 - 100 days'
+
+# First K51 occurred before (first K50 + 30 days)
+'1st K51 before 1st K50 + 30 days'
+
+# Parens are optional but allowed
+'1st K51 before (1st K50 - 100 days)'
+
+# Chains add up: (-30) + (-7) == -37
+'1st K51 before 1st K50 - 30 days - 7 days'
+
+# Inside a window — the right bound is shifted
+'K50 inside 60 days before -1st K51 - 14 days'
+
+# As either bound of a positional `inside ... and ...` span
+'K50 inside 1st K51 + 7 days and 5th K51 - 7 days'
+```
+
+**Restrictions.**
+
+- The shifted side must be a single-date expression — i.e. an ordinal selector (`1st X`, `-2nd X`, `5th of X`). Plain code (`K51 - 30 days`), multi-row prefixes (`first 2 of K51 - 30 days`), and counting prefixes (`min 2 of K51 + 30 days`) are syntax errors.
+- Shifted dates are valid only as the **reference** in:
+  - the RHS of `before` / `after` / `simultaneously`
+  - the ref of an `inside N days direction REF` window
+  - either bound of `inside EXPR and EXPR`
+- They are **not** valid as the LHS of a temporal comparison, in event-count windows (`inside N events after …`), as the ref of a positional span without bounds, as a logical operand, or as the child of a prefix.
+- Only the unit `days` is supported (no `weeks`/`months`/`years`).
+
+### Outside Complements
+
+For every positive `inside …` form, `outside …` gives the row-level complement, restricted to evaluable persons (i.e. those for whom the corresponding positive form is well-defined):
+
+```python
+'K50 outside 30 days after K51'
+'K50 outside 5 to 30 days after K51'
+'K50 outside 3 events after K51'
+'K50 outside last 5 events'
+'K50 outside 1st K51 and 5th K51'
+```
+
+`outside` participates in the same precedence slot as `inside` and obeys the same parenthesisation rules.
 
 ---
 
@@ -305,7 +397,7 @@ result.pct()             # 11.8 — conditional: of those evaluable
 result.pct(dropna=False) # 2.0  — marginal: of all patients
 ```
 
-The default `pct()` mirrors pandas' `dropna=True` convention: persons for whom the query is *undefined* (not merely false) are excluded from the denominator. A person is "missing" only if they lack one of the events being compared in a temporal/within/inside subexpression. For non-comparative queries (`K50`, `min 2 of K51`, `K50 and K51`), every person is evaluable, so `pct()` and `pct(dropna=False)` return the same number.
+The default `pct()` mirrors pandas' `dropna=True` convention: persons for whom the query is *undefined* (not merely false) are excluded from the denominator. A person is "missing" only if they lack one of the events being compared in a temporal/`inside` subexpression. For non-comparative queries (`K50`, `min 2 of K51`, `K50 and K51`), every person is evaluable, so `pct()` and `pct(dropna=False)` return the same number.
 
 The `dropna=False` form gives the marginal percentage — useful for prevalence-style questions ("what fraction of the whole cohort experienced this pattern"). The default `dropna=True` gives the conditional percentage — usually the more clinically interesting reading ("among patients eligible for the comparison, what fraction matched").
 
@@ -317,6 +409,27 @@ df.tq.pct('K50 before K51')                # 11.8 — default conditional
 df.tq.pct('K50 before K51', dropna=False)  # 2.0  — marginal
 ```
 
+### Boolean Masks: `mask()`
+
+Use `df.tq.mask("expr")` when you want a boolean Series instead of a count or percentage. By default it returns a row-aligned mask — useful for filtering directly:
+
+```python
+# Row-level mask aligned to df.index (the default)
+mask = df.tq.mask('K50 inside 90 days after K51')
+df[mask]                              # only the matching rows
+
+# Quick row-selection idioms
+df[df.tq.mask('last 2 of K50')]
+df[df.tq.mask('after 2nd of K51')]
+df[df.tq.mask('-1st K50')]            # the last K50 per person
+
+# Person-level mask (Series indexed by pid)
+persons = df.tq.mask('K50 before K51', level='persons')
+persons.sum()                         # same as df.tq.count('K50 before K51')
+```
+
+`mask()` accepts the same expression language as `count()` and `pct()` and forwards `**kwargs` to the underlying query (so `cols=`, `config=`, `variables=`, etc. all work).
+
 **Notes on edge cases:**
 
 - If `evaluable == 0` (no person could even be evaluated), `pct()` returns `0.0`, not `NaN` or an exception.
@@ -327,7 +440,7 @@ df.tq.pct('K50 before K51', dropna=False)  # 2.0  — marginal
 
 ```python
 tquery.count_persons(df, 'K50 before K51')        # → int
-tquery.event_counts(df, 'K50 within 90 days')      # → Series (pid → count)
+tquery.event_counts(df, 'K50 inside 90 days')      # → Series (pid → count)
 ```
 
 ---
@@ -350,7 +463,7 @@ tquery.multi_query(df, 'K5?[0-9] before K51')   # 10 queries
 tquery.multi_query(df, 'min ?[1,2,3,5] of K50')
 
 # Vary the time window
-tquery.multi_query(df, 'K50 within ?[30,60,90,180,365] days after K51')
+tquery.multi_query(df, 'K50 inside ?[30,60,90,180,365] days after K51')
 
 # Multiple slots (cartesian product)
 tquery.multi_query(df, 'K5?[0,1] before K5?[2,3]')
@@ -640,7 +753,7 @@ Three modes mirror the three stringify functions:
 | `"time"` | `stringify_time` | You want fixed time-step buckets (e.g. one slot per 90 days) |
 | `"durations"` | `stringify_durations` | Events have durations and fill multiple slots |
 
-The string evaluator supports the full query language — wildcards, prefixes (`min N of`, `1st of`, …), `before`/`after`, `within N days`, `not`/`and`/`or` — but operates on the per-person string representation rather than raw rows. `cross_validate` lets you sanity-check both evaluators against each other on the same query.
+The string evaluator supports the full query language — wildcards, prefixes (`min N of`, `1st of`, …), `before`/`after`, `inside N days`, `not`/`and`/`or` — but operates on the per-person string representation rather than raw rows. `cross_validate` lets you sanity-check both evaluators against each other on the same query.
 
 ### String Manipulation Helpers
 
@@ -895,16 +1008,16 @@ The DataFrame should ideally be **sorted by (pid, date)** for best performance.
 
 ```python
 # Heart failure 30-day readmission
-df.tq('I50 within 30 days after I50').count
+df.tq('I50 inside 30 days after I50').count
 
 # Statin within 90 days after MI (guideline adherence)
-df.tq('C10AA within 90 days after I21').count
+df.tq('C10AA inside 90 days after I21').count
 
 # Stroke in AF patients without anticoagulation
-df.tq('I63 within 365 days after 1st of I48 and not B01A').count
+df.tq('I63 inside 365 days after 1st of I48 and not B01A').count
 
 # New statin prescription 30-365 days after MI (washout period)
-df.tq('C10AA between 30 and 365 days after I21').count
+df.tq('C10AA inside 30 to 365 days after I21').count
 ```
 
 ### Diabetes
@@ -914,10 +1027,10 @@ df.tq('C10AA between 30 and 365 days after I21').count
 df.tq('A10BA02 before A10AE').count
 
 # 3+ high glucose readings within a year
-df.tq('min 3 of glucose>9 within 365 days').count
+df.tq('min 3 of glucose>9 inside 365 days').count
 
 # Treatment delay: metformin within 90 days of diagnosis
-df.tq('A10BA02 within 90 days after 1st of E11').count
+df.tq('A10BA02 inside 90 days after 1st of E11').count
 ```
 
 ### Inflammatory Bowel Disease
@@ -927,10 +1040,10 @@ df.tq('A10BA02 within 90 days after 1st of E11').count
 df.tq('L04AB02 before A07EC02').count
 
 # Steroid-dependent patients (3+ courses in a year)
-df.tq('min 3 of H02AB06 within 365 days').count
+df.tq('min 3 of H02AB06 inside 365 days').count
 
 # Relapse within 1 year of starting biologic
-df.tq('K50 within 365 days after 1st of L04AB02').count
+df.tq('K50 inside 365 days after 1st of L04AB02').count
 
 # Treatment pattern visualization
 codes = {'i': ['L04AB02'], 'a': ['L04AB04'], 's': ['H02AB*']}
@@ -941,10 +1054,10 @@ df.tq.stringify_order(codes, cols='atc')
 
 ```python
 # C. difficile within 60 days of antibiotics
-df.tq('A047 within 60 days after J01').count
+df.tq('A047 inside 60 days after J01').count
 
 # Repeated courses (treatment failure signal)
-df.tq('min 3 of J01 within 90 days').count
+df.tq('min 3 of J01 inside 90 days').count
 
 # Explore which antibiotic codes are most common
 df.tq.count_codes(cols='atc', pattern='J01*')

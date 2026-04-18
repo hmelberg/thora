@@ -14,16 +14,20 @@ import pandas as pd
 
 from tquery._ast import (
     ASTNode,
+    BetweenExpr,
     BinaryLogical,
     CodeAtom,
     ComparisonAtom,
+    EventAtom,
     InsideExpr,
     NotExpr,
     PrefixExpr,
     Quantifier,
     RangePrefixExpr,
+    ShiftExpr,
     TemporalExpr,
     WithinExpr,
+    WithinSpanExpr,
 )
 from tquery._cache import EvalCache
 from tquery._codes import (
@@ -56,6 +60,19 @@ def _unwrap_quantifier(node: ASTNode) -> tuple[ASTNode, bool]:
     if isinstance(node, Quantifier):
         return node.child, node.kind == "every"
     return node, False
+
+
+def _unwrap_shift(node: ASTNode) -> tuple[ASTNode, int]:
+    """Strip `ShiftExpr` wrappers, summing signed day offsets.
+
+    Returns `(inner, offset_days)`. For non-ShiftExpr nodes, returns
+    `(node, 0)`. Chained shifts collapse to a single offset.
+    """
+    offset = 0
+    while isinstance(node, ShiftExpr):
+        offset += node.offset_days
+        node = node.child
+    return node, offset
 
 
 class Evaluator:
@@ -116,6 +133,8 @@ class Evaluator:
     def _dispatch(self, node: ASTNode) -> pd.Series:
         if isinstance(node, CodeAtom):
             return self._eval_code(node)
+        elif isinstance(node, EventAtom):
+            return self._eval_event(node)
         elif isinstance(node, ComparisonAtom):
             return self._eval_comparison(node)
         elif isinstance(node, PrefixExpr):
@@ -130,8 +149,21 @@ class Evaluator:
             return self._eval_temporal(node)
         elif isinstance(node, WithinExpr):
             return self._eval_within(node)
+        elif isinstance(node, WithinSpanExpr):
+            return self._eval_within_span(node)
         elif isinstance(node, InsideExpr):
             return self._eval_inside(node)
+        elif isinstance(node, BetweenExpr):
+            return self._eval_between(node)
+        elif isinstance(node, ShiftExpr):
+            # ShiftExpr is consumed by its parent (temporal / within / between).
+            # Reaching here means it appeared in a position where shifted
+            # anchors aren't supported.
+            raise TypeError(
+                "Shifted anchor dates (`± N days`) can only appear as the "
+                "reference of a temporal comparison or the ref / bound of an "
+                "`inside`/`outside` time-window or bounds form"
+            )
         elif isinstance(node, Quantifier):
             # Quantifier is consumed by its parent temporal/within node.
             # Reaching here means it appeared outside a valid context.
@@ -154,6 +186,9 @@ class Evaluator:
             variables=self.variables,
         )
         return get_matching_rows(self.df, codes, cols, self.sep)
+
+    def _eval_event(self, node: EventAtom) -> pd.Series:
+        return pd.Series(True, index=self.df.index)
 
     def _eval_comparison(self, node: ComparisonAtom) -> pd.Series:
         if node.column not in self.df.columns:
@@ -213,37 +248,114 @@ class Evaluator:
         return pid.isin(matching_pids) & (left | right)
 
     def _eval_temporal(self, node: TemporalExpr) -> pd.Series:
-        left_node, every_left = _unwrap_quantifier(node.left)
-        right_node, every_right = _unwrap_quantifier(node.right)
-        left_mask = self.evaluate(left_node)
+        left_inner, every_left = _unwrap_quantifier(node.left)
+        if isinstance(left_inner, ShiftExpr):
+            raise TypeError(
+                "Shifted anchor dates are only valid on the reference side "
+                "of `before`/`after`/`simultaneously`"
+            )
+        right_inner, every_right = _unwrap_quantifier(node.right)
+        right_node, right_offset = _unwrap_shift(right_inner)
+        left_mask = self.evaluate(left_inner)
         right_mask = self.evaluate(right_node)
         return eval_before_after(
             self.df, left_mask, right_mask, node.op, self.pid, self.date,
             every_left=every_left, every_right=every_right,
+            right_offset_days=right_offset,
         )
 
     def _eval_within(self, node: WithinExpr) -> pd.Series:
         child_node, every_left = _unwrap_quantifier(node.child)
+        if isinstance(child_node, ShiftExpr):
+            raise TypeError(
+                "Shifted anchor dates cannot appear as the subject (LHS) of "
+                "a window; they are only valid as the reference"
+            )
+        ref_offset = 0
         if node.ref is not None:
-            ref_node, every_right = _unwrap_quantifier(node.ref)
+            ref_inner, every_right = _unwrap_quantifier(node.ref)
+            ref_node, ref_offset = _unwrap_shift(ref_inner)
             ref_mask = self.evaluate(ref_node)
         else:
             every_right = False
             ref_mask = None
         child_mask = self.evaluate(child_node)
-        return eval_within_days(
+        in_window = eval_within_days(
             self.df, child_mask, ref_mask, node.days, node.direction,
             self.pid, self.date, min_days=node.min_days,
             every_left=every_left, every_right=every_right,
+            ref_offset_days=ref_offset,
         )
+        if not node.outside:
+            return in_window
+        evaluable_rows = self.df[self.pid].isin(self.evaluable_pids(node))
+        return child_mask & ~in_window & evaluable_rows
 
     def _eval_inside(self, node: InsideExpr) -> pd.Series:
+        if isinstance(node.ref, ShiftExpr):
+            raise TypeError(
+                "Shifted anchor dates cannot be used as the ref of an "
+                "event-count window (events are row-position based)"
+            )
         child_mask = self.evaluate(node.child)
         ref_mask = self.evaluate(node.ref)
         return eval_inside_outside(
-            self.df, child_mask, ref_mask, node.inside, node.n_events,
+            self.df, child_mask, ref_mask, node.inside,
+            node.min_events, node.max_events,
             node.direction, self.pid
         )
+
+    def _eval_between(self, node: BetweenExpr) -> pd.Series:
+        child_mask = self.evaluate(node.child)
+        start_node, start_offset = _unwrap_shift(node.bound_start)
+        end_node, end_offset = _unwrap_shift(node.bound_end)
+        start_mask = self.evaluate(start_node)
+        end_mask = self.evaluate(end_node)
+
+        pid = self.df[self.pid]
+        dates = self.df[self.date]
+
+        start_dates = (
+            dates[start_mask].groupby(pid[start_mask]).min()
+            + pd.Timedelta(days=start_offset)
+        )
+        end_dates = (
+            dates[end_mask].groupby(pid[end_mask]).max()
+            + pd.Timedelta(days=end_offset)
+        )
+
+        row_start = pid.map(start_dates)
+        row_end = pid.map(end_dates)
+
+        in_window = ((dates >= row_start) & (dates <= row_end)).fillna(False)
+        if not node.outside:
+            return child_mask & in_window
+        evaluable_rows = pid.isin(self.evaluable_pids(node))
+        return child_mask & ~in_window & evaluable_rows
+
+    def _eval_within_span(self, node: WithinSpanExpr) -> pd.Series:
+        if isinstance(node.ref, ShiftExpr):
+            raise TypeError(
+                "Shifted anchor dates have no span; positional-span `inside "
+                "EXPR` requires a multi-row selector"
+            )
+        child_mask = self.evaluate(node.child)
+        ref_mask = self.evaluate(node.ref)
+
+        pid = self.df[self.pid]
+        dates = self.df[self.date]
+
+        ref_min = dates[ref_mask].groupby(pid[ref_mask]).min()
+        ref_max = dates[ref_mask].groupby(pid[ref_mask]).max()
+
+        row_min = pid.map(ref_min)
+        row_max = pid.map(ref_max)
+
+        in_span = ((dates >= row_min) & (dates <= row_max)).fillna(False)
+        if not node.outside:
+            return child_mask & in_span
+        evaluable_rows = pid.isin(self.evaluable_pids(node))
+        return child_mask & ~in_span & evaluable_rows
 
     # ------------------------------------------------------------------
     # Evaluable / "missing" analysis
@@ -264,7 +376,7 @@ class Evaluator:
         return self._evaluable_walk(node, all_pids)
 
     def _evaluable_walk(self, node: ASTNode, all_pids: set) -> set:
-        if isinstance(node, (CodeAtom, ComparisonAtom)):
+        if isinstance(node, (CodeAtom, EventAtom, ComparisonAtom)):
             return all_pids
         if isinstance(node, NotExpr):
             # `not X` is two-valued in the existing evaluator: persons absent
@@ -276,6 +388,15 @@ class Evaluator:
             return all_pids
         if isinstance(node, (PrefixExpr, RangePrefixExpr)):
             return self._evaluable_walk(node.child, all_pids)
+        if isinstance(node, ShiftExpr):
+            # A shifted anchor is evaluable iff its underlying child is.
+            # Also narrow to persons who actually have the anchor event
+            # (shifted nothing = no anchor date for that person).
+            inner, _ = _unwrap_shift(node)
+            return (
+                self._evaluable_walk(inner, all_pids)
+                & self._pids_with_events(inner)
+            )
         if isinstance(node, Quantifier):
             # `every X` is undefined for persons with no X events
             # (vacuous-truth rule excludes them from being True);
@@ -317,6 +438,25 @@ class Evaluator:
                 child_eval
                 & ref_eval
                 & self._pids_with_events(node.child)
+                & self._pids_with_events(node.ref)
+            )
+        if isinstance(node, BetweenExpr):
+            child_eval = self._evaluable_walk(node.child, all_pids)
+            start_eval = self._evaluable_walk(node.bound_start, all_pids)
+            end_eval = self._evaluable_walk(node.bound_end, all_pids)
+            return (
+                child_eval
+                & start_eval
+                & end_eval
+                & self._pids_with_events(node.bound_start)
+                & self._pids_with_events(node.bound_end)
+            )
+        if isinstance(node, WithinSpanExpr):
+            child_eval = self._evaluable_walk(node.child, all_pids)
+            ref_eval = self._evaluable_walk(node.ref, all_pids)
+            return (
+                child_eval
+                & ref_eval
                 & self._pids_with_events(node.ref)
             )
         return all_pids
