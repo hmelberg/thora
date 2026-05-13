@@ -1,0 +1,53 @@
+# Generated manually for v1; switch to roxygen later.
+
+# Public API
+export(tquery)
+export(count_persons)
+export(event_counts)
+export(parse_query)
+
+# AST constructors — useful for programmatic AST construction in user code
+export(new_code_atom)
+export(new_event_atom)
+export(new_comparison_atom)
+export(new_aggregate_expr)
+export(new_prefix_expr)
+export(new_range_prefix_expr)
+export(new_not_expr)
+export(new_binary_logical)
+export(new_temporal_expr)
+export(new_within_expr)
+export(new_within_span_expr)
+export(new_inside_expr)
+export(new_between_expr)
+export(new_shift_expr)
+export(new_quantifier)
+
+# AST JSON helpers (require Suggests: jsonlite at call time)
+export(ast_to_json)
+export(ast_from_json)
+
+# Eval dispatch — exported so users can extend with custom AST types if needed
+export(tq_eval)
+
+# S3 method for print
+S3method(print, tquery_result)
+
+# tq_eval methods
+S3method(tq_eval, CodeAtom)
+S3method(tq_eval, EventAtom)
+S3method(tq_eval, ComparisonAtom)
+S3method(tq_eval, AggregateExpr)
+S3method(tq_eval, PrefixExpr)
+S3method(tq_eval, RangePrefixExpr)
+S3method(tq_eval, NotExpr)
+S3method(tq_eval, BinaryLogical)
+S3method(tq_eval, TemporalExpr)
+S3method(tq_eval, WithinExpr)
+S3method(tq_eval, InsideExpr)
+S3method(tq_eval, WithinSpanExpr)
+S3method(tq_eval, BetweenExpr)
+S3method(tq_eval, Quantifier)
+S3method(tq_eval, default)
+
+import(data.table)

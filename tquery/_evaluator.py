@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from tquery._ast import (
+    AggregateExpr,
     ASTNode,
     BetweenExpr,
     BinaryLogical,
@@ -39,6 +40,49 @@ from tquery._codes import (
 from tquery._prefix import eval_prefix, eval_range_prefix
 from tquery._temporal import eval_before_after, eval_inside_outside, eval_within_days
 from tquery._types import TQueryColumnError
+
+
+def _rise_scalar(series: pd.Series) -> float:
+    """Max drawup of a numeric series. NA-skipping; single value → 0;
+    all-NA → NaN.
+    """
+    v = series.dropna().to_numpy()
+    if v.size == 0:
+        return float("nan")
+    if v.size == 1:
+        return 0.0
+    return float((v - np.minimum.accumulate(v)).max())
+
+
+def _fall_scalar(series: pd.Series) -> float:
+    """Max drawdown of a numeric series, returned as a non-negative
+    magnitude. NA-skipping; single value → 0; all-NA → NaN.
+    """
+    v = series.dropna().to_numpy()
+    if v.size == 0:
+        return float("nan")
+    if v.size == 1:
+        return 0.0
+    return float((np.maximum.accumulate(v) - v).max())
+
+
+def _rise_array(arr: np.ndarray) -> float:
+    """rolling.apply-friendly variant (raw=True)."""
+    a = arr[~np.isnan(arr)]
+    if a.size == 0:
+        return float("nan")
+    if a.size == 1:
+        return 0.0
+    return float((a - np.minimum.accumulate(a)).max())
+
+
+def _fall_array(arr: np.ndarray) -> float:
+    a = arr[~np.isnan(arr)]
+    if a.size == 0:
+        return float("nan")
+    if a.size == 1:
+        return 0.0
+    return float((np.maximum.accumulate(a) - a).max())
 
 
 _OPS = {
@@ -137,6 +181,8 @@ class Evaluator:
             return self._eval_event(node)
         elif isinstance(node, ComparisonAtom):
             return self._eval_comparison(node)
+        elif isinstance(node, AggregateExpr):
+            return self._eval_aggregate(node, row_mask=None)
         elif isinstance(node, PrefixExpr):
             return self._eval_prefix(node)
         elif isinstance(node, RangePrefixExpr):
@@ -265,6 +311,13 @@ class Evaluator:
         )
 
     def _eval_within(self, node: WithinExpr) -> pd.Series:
+        # v0.2: dispatch to aggregate handling when the child is an
+        # AggregateExpr. Same WithinExpr surface, different semantics
+        # (sliding rolling window when no ref; anchored row-mask + agg
+        # when ref is set). See spec/semantics.md.
+        if isinstance(node.child, AggregateExpr):
+            return self._eval_within_aggregate(node)
+
         child_node, every_left = _unwrap_quantifier(node.child)
         if isinstance(child_node, ShiftExpr):
             raise TypeError(
@@ -291,7 +344,216 @@ class Evaluator:
         evaluable_rows = self.df[self.pid].isin(self.evaluable_pids(node))
         return child_mask & ~in_window & evaluable_rows
 
+    # ---- Aggregate evaluation (v0.2) ---------------------------------
+
+    _AGG_METHODS = {
+        "sum":    "sum",
+        "mean":   "mean",
+        "avg":    "mean",
+        "min":    "min",
+        "max":    "max",
+        "median": "median",
+        "sd":     "std",
+        "var":    "var",
+        "count":  "count",
+        "n":      "count",
+        # `range` is not a pandas SeriesGroupBy method; handled by _apply_agg.
+    }
+
+    @staticmethod
+    def _apply_agg(grouped: "pd.core.groupby.SeriesGroupBy", func: str) -> pd.Series:
+        """Apply an aggregate to a per-pid grouped Series. Handles
+        `range`, `rise`, `fall` directly; otherwise delegates to the
+        named method.
+        """
+        if func == "range":
+            return grouped.max() - grouped.min()
+        if func == "rise":
+            # Vectorised max drawup per group via cummin.
+            return grouped.apply(_rise_scalar)
+        if func == "fall":
+            return grouped.apply(_fall_scalar)
+        method = Evaluator._AGG_METHODS[func]
+        return getattr(grouped, method)()
+
+    def _eval_aggregate(
+        self,
+        node: AggregateExpr,
+        row_mask: pd.Series | None = None,
+    ) -> pd.Series:
+        """Standalone or row-masked aggregate. Returns a row-level mask
+        (every row of a matching person True)."""
+        if node.column not in self.df.columns:
+            raise TQueryColumnError(
+                f"Column '{node.column}' not found in DataFrame"
+            )
+        col = self.df[node.column]
+        pid = self.df[self.pid]
+        if row_mask is not None:
+            col = col[row_mask]
+            sub_pid = pid[row_mask]
+        else:
+            sub_pid = pid
+
+        # pandas .count() ignores NA; sum/mean/etc also have skipna=True default.
+        agg = self._apply_agg(col.groupby(sub_pid), node.func)
+
+        op_func = _OPS[node.op]
+        matching = op_func(agg, node.value)
+        # NA comparison resolves False (existing ComparisonAtom convention).
+        matching = matching.fillna(False).astype(bool)
+        matching_pids = set(agg.index[matching])
+        return pid.isin(matching_pids)
+
+    def _eval_within_aggregate(self, node: WithinExpr) -> pd.Series:
+        agg_node: AggregateExpr = node.child  # type: ignore[assignment]
+        sliding = node.direction is None and node.ref is None
+
+        if sliding:
+            if node.outside:
+                raise TypeError(
+                    "`outside` over a sliding aggregate has no defined "
+                    "semantics in v0.2"
+                )
+            return self._eval_aggregate_sliding(agg_node, node.days)
+
+        # Anchored: aggregate over rows whose date falls in the window of
+        # any ref event. We construct the window row-mask by passing an
+        # all-True child mask through eval_within_days.
+        ref_inner, _every_right = _unwrap_quantifier(node.ref)
+        ref_node, ref_offset = _unwrap_shift(ref_inner)
+        ref_mask = self.evaluate(ref_node)
+        all_rows = pd.Series(True, index=self.df.index)
+        in_window = eval_within_days(
+            self.df, all_rows, ref_mask, node.days, node.direction,
+            self.pid, self.date, min_days=node.min_days,
+            ref_offset_days=ref_offset,
+        )
+        if node.outside:
+            # Aggregate over rows OUTSIDE the window, restricted to
+            # persons who have at least one ref event (evaluable).
+            evaluable_pids = set(self.df[self.pid][ref_mask].unique())
+            evaluable_rows = self.df[self.pid].isin(evaluable_pids)
+            out_window = evaluable_rows & ~in_window
+            return self._eval_aggregate(agg_node, row_mask=out_window)
+        return self._eval_aggregate(agg_node, row_mask=in_window)
+
+    def _eval_aggregate_sliding(
+        self, node: AggregateExpr, days: int,
+    ) -> pd.Series:
+        """Sliding `inside N days` aggregate. For each person, ask whether
+        there exists ANY N-day window in their timeline (right-anchored
+        at every event) where the rolling aggregate satisfies the
+        threshold predicate.
+        """
+        if node.column not in self.df.columns:
+            raise TQueryColumnError(
+                f"Column '{node.column}' not found in DataFrame"
+            )
+        op_func = _OPS[node.op]
+        pid_col = self.pid
+        date_col = self.date
+
+        # We use a per-group rolling time-window. Pandas' groupby.rolling
+        # with a time offset requires the rolling key to be a sorted
+        # DatetimeIndex per group; build a temporary frame for that.
+        frame = self.df[[pid_col, date_col, node.column]].copy()
+        frame = frame.sort_values([pid_col, date_col])
+
+        rolling = (
+            frame.set_index(date_col)
+            .groupby(pid_col)[node.column]
+            .rolling(f"{days}D", closed="both")
+        )
+        if node.func == "range":
+            rolling_agg = rolling.max() - rolling.min()
+        elif node.func == "rise":
+            rolling_agg = rolling.apply(_rise_array, raw=True)
+        elif node.func == "fall":
+            rolling_agg = rolling.apply(_fall_array, raw=True)
+        else:
+            method = self._AGG_METHODS[node.func]
+            try:
+                rolling_agg = getattr(rolling, method)()
+            except (TypeError, ValueError):
+                # .count() doesn't accept closed=; redo without it
+                rolling2 = (
+                    frame.set_index(date_col)
+                    .groupby(pid_col)[node.column]
+                    .rolling(f"{days}D")
+                )
+                rolling_agg = getattr(rolling2, method)()
+
+        # rolling_agg has MultiIndex (pid, date). Test per row, then per pid.
+        match = op_func(rolling_agg, node.value).fillna(False)
+        # Any row in a person's group matching → person matches.
+        matching_pids = set(
+            match.index.get_level_values(pid_col)[match.values]
+        )
+        return self.df[pid_col].isin(matching_pids)
+
+    # ---- InsideExpr event-window aggregates (v0.2.1) -----------------
+
+    def _eval_inside_aggregate(self, node: InsideExpr) -> pd.Series:
+        """Sliding or anchored event-position aggregate."""
+        agg_node: AggregateExpr = node.child  # type: ignore[assignment]
+        sliding = node.direction is None and node.ref is None
+
+        if sliding:
+            return self._eval_aggregate_sliding_events(
+                agg_node, window_size=node.max_events,
+            )
+
+        # Anchored: build a row mask of rows whose event-position is in
+        # the window of any ref event, then aggregate.
+        ref_mask = self.evaluate(node.ref)
+        all_rows = pd.Series(True, index=self.df.index)
+        in_window = eval_inside_outside(
+            self.df, all_rows, ref_mask, True,
+            node.min_events, node.max_events, node.direction, self.pid,
+        )
+        if not node.inside:
+            evaluable_pids = set(self.df[self.pid][ref_mask].unique())
+            evaluable_rows = self.df[self.pid].isin(evaluable_pids)
+            in_window = evaluable_rows & ~in_window
+        return self._eval_aggregate(agg_node, row_mask=in_window)
+
+    def _eval_aggregate_sliding_events(
+        self, node: AggregateExpr, window_size: int,
+    ) -> pd.Series:
+        """Sliding `inside N events` aggregate. For each row r, compute
+        the aggregate over the N rows ending at r (within the person's
+        timeline). Person matches if any row's window satisfies."""
+        if node.column not in self.df.columns:
+            raise TQueryColumnError(
+                f"Column '{node.column}' not found in DataFrame"
+            )
+        op_func = _OPS[node.op]
+        pid_col = self.pid
+
+        frame = self.df[[pid_col, self.date, node.column]].copy()
+        frame = frame.sort_values([pid_col, self.date])
+        grouped = frame.groupby(pid_col)[node.column]
+        rolling = grouped.rolling(window=window_size, min_periods=1)
+        if node.func == "range":
+            rolling_agg = rolling.max() - rolling.min()
+        elif node.func == "rise":
+            rolling_agg = rolling.apply(_rise_array, raw=True)
+        elif node.func == "fall":
+            rolling_agg = rolling.apply(_fall_array, raw=True)
+        else:
+            method = self._AGG_METHODS[node.func]
+            rolling_agg = getattr(rolling, method)()
+        match = op_func(rolling_agg, node.value).fillna(False)
+        matching_pids = set(
+            match.index.get_level_values(pid_col)[match.values]
+        )
+        return self.df[pid_col].isin(matching_pids)
+
     def _eval_inside(self, node: InsideExpr) -> pd.Series:
+        # v0.2.1: aggregate child → event-window aggregate (sliding or anchored).
+        if isinstance(node.child, AggregateExpr):
+            return self._eval_inside_aggregate(node)
         if isinstance(node.ref, ShiftExpr):
             raise TypeError(
                 "Shifted anchor dates cannot be used as the ref of an "

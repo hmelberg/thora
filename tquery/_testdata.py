@@ -54,10 +54,21 @@ def make_test_data(
     dates = start + pd.to_timedelta(rng.integers(0, days_range, n_total), unit="D")
     icd = rng.choice(codes, n_total)
 
+    # Numeric columns for aggregate-expression testing (v0.2).
+    # `dose` is dense — present on every row, integer 1–100.
+    # `dose_k` is sparse — populated only on K-codes, NA elsewhere.
+    # This mirrors the real-world pattern where a value column is filled
+    # in only for the rows that belong to a clinical category.
+    dose = rng.integers(1, 101, n_total).astype(float)
+    dose_k = dose.copy()
+    dose_k[~pd.Series(icd).str.startswith("K").to_numpy()] = np.nan
+
     df = pd.DataFrame({
         "pid": pids,
         "start_date": dates,
         "icd": icd,
+        "dose": dose,
+        "dose_k": dose_k,
     })
 
     return df.sort_values(["pid", "start_date"]).reset_index(drop=True)

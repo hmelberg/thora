@@ -37,6 +37,22 @@ class ComparisonAtom:
 
 
 @dataclass(frozen=True, slots=True)
+class AggregateExpr:
+    """Person-level aggregate over a numeric column, compared to a threshold.
+
+    Spelled in the DSL as ``sum(col) > 300``, ``mean(col) < 50``, etc.
+    May appear as the child of a ``WithinExpr``: with a direction/ref
+    set, the within is *anchored* (aggregate over rows in the window);
+    without direction/ref, the within is *sliding* (any N-day stretch
+    in the person's timeline). See ``spec/semantics.md``.
+    """
+    func: str   # 'sum'|'mean'|'avg'|'min'|'max'|'median'|'sd'|'var'|'count'|'n'
+    column: str
+    op: str     # '>', '<', '>=', '<=', '==', '!='
+    value: float
+
+
+@dataclass(frozen=True, slots=True)
 class PrefixExpr:
     """A quantifier prefix applied to a child expression.
 
@@ -105,13 +121,17 @@ class InsideExpr:
     in row-positions offset from each ref row (positive = after, negative
     = before). Shorthand `inside N events after Y` stores
     ``min_events=1, max_events=N``.
+
+    v0.2.1: ``direction`` and ``ref`` are optional. When both are None
+    AND ``child`` is an ``AggregateExpr``, this represents a sliding
+    right-anchored event window of size ``max_events``.
     """
     child: ASTNode
     inside: bool  # True = inside, False = outside
     min_events: int
     max_events: int
-    direction: str  # 'before', 'after', 'around'
-    ref: ASTNode
+    direction: str | None  # 'before', 'after', 'around', or None (sliding agg)
+    ref: ASTNode | None    # None only with direction = None and AggregateExpr child
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +195,7 @@ ASTNode = Union[
     CodeAtom,
     EventAtom,
     ComparisonAtom,
+    AggregateExpr,
     PrefixExpr,
     RangePrefixExpr,
     NotExpr,

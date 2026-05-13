@@ -1,0 +1,20 @@
+Package: tquery
+Type: Package
+Title: Temporal Query Language for Event-Level Health Data
+Version: 0.1.0
+Author: Hans Olav Melberg [aut, cre]
+Maintainer: Hans Olav Melberg <hans.melberg@gmail.com>
+Description: A port of the Python tquery library: a temporal query
+    language for event-level health register data. Lets you answer
+    questions like "K50 before K51" or "min 3 of J01* inside 100 days"
+    over data.table-style event logs.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.1.0)
+Imports:
+    data.table (>= 1.14)
+Suggests:
+    jsonlite,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

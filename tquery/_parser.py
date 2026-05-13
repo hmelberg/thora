@@ -13,6 +13,7 @@ from enum import Enum, auto
 from typing import Any
 
 from tquery._ast import (
+    AggregateExpr,
     ASTNode,
     BetweenExpr,
     BinaryLogical,
@@ -64,6 +65,21 @@ KEYWORDS = frozenset({
     "days", "event", "events",
     "around",
     "every", "any", "each", "always",
+    # v0.2 aggregate-expression keywords. `min` and `max` are already
+    # listed above — they're disambiguated by 1-token lookahead at parse
+    # time (`min(` → aggregate, `min INT` → existing count-prefix).
+    "sum", "mean", "avg", "median", "sd", "var", "count", "n",
+    "range",  # v0.2.1
+    "rise", "fall",  # v0.2.2 — max drawup / max drawdown
+})
+
+# Aggregate function names. Membership tested by the parser; `min` and
+# `max` are included via the surrounding keyword check.
+AGG_FUNCS = frozenset({
+    "sum", "mean", "avg", "min", "max",
+    "median", "sd", "var", "count", "n",
+    "range",  # v0.2.1
+    "rise", "fall",  # v0.2.2
 })
 
 # Keywords that are also valid as direction modifiers inside within/inside clauses
@@ -356,8 +372,16 @@ class Parser:
             child = self._parse_within()
             return RangePrefixExpr(min_n, max_n, child)
 
-        # Check for quantifier prefixes
+        # Check for quantifier prefixes. `min(` and `max(` are aggregates,
+        # not count prefixes — let the atom layer handle them.
         if self._at_keyword("min", "max", "exactly"):
+            if (
+                self._peek().value in ("min", "max")
+                and self.pos + 1 < len(self.tokens)
+                and self.tokens[self.pos + 1].type == TokenType.LPAREN
+            ):
+                # Fall through to the within/atom path so _try_aggregate_atom fires.
+                return self._parse_within()
             kind = self._advance().value
             tok = self._peek()
             if tok.type != TokenType.INT:
@@ -514,6 +538,23 @@ class Parser:
             )
         # events
         if direction is None or ref is None:
+            # v0.2.1: sliding event window over an AggregateExpr child.
+            if isinstance(child, AggregateExpr):
+                if outside:
+                    raise self._error(
+                        "`outside N events` over a sliding aggregate has no "
+                        "defined semantics"
+                    )
+                # Window size is taken from max_val; the inclusive range
+                # form is meaningless without an anchor, so reject it.
+                if min_val != 0:
+                    raise self._error(
+                        "Sliding event window for aggregate cannot have a "
+                        "lower bound (use 'inside N events' for a window of N)"
+                    )
+                return InsideExpr(
+                    child, True, 0, max_val, None, None,
+                )
             raise self._error(
                 "Event window requires a direction (before/after/around) "
                 "and a reference expression"
@@ -548,12 +589,65 @@ class Parser:
             self._advance()
             return EventAtom()
 
+        # Aggregate atom: AGG '(' IDENT ')' OP NUMBER (v0.2)
+        agg = self._try_aggregate_atom()
+        if agg is not None:
+            return agg
+
         # Try column comparison: IDENT OP NUMBER
         if self._is_comparison_ahead():
             return self._parse_comparison()
 
         # Code expression (possibly comma-separated, with optional column spec)
         return self._parse_code_expr()
+
+    def _try_aggregate_atom(self) -> AggregateExpr | None:
+        """Try to parse `AGG ( IDENT ) OP NUMBER`. Returns None if not an aggregate.
+
+        Disambiguates `min`/`max` from their existing count-prefix role by
+        requiring an immediate `(` after the keyword.
+        """
+        tok = self._peek()
+        if tok.type != TokenType.KEYWORD or tok.value not in AGG_FUNCS:
+            return None
+        # Look one ahead for '(' — required for the aggregate interpretation.
+        if self.pos + 1 >= len(self.tokens):
+            return None
+        next_tok = self.tokens[self.pos + 1]
+        if next_tok.type != TokenType.LPAREN:
+            # `min INT` / `max INT` etc. — let the prefix path handle it.
+            return None
+
+        func = self._advance().value          # AGG keyword
+        self._advance()                       # '('
+        col_tok = self._peek()
+        if col_tok.type not in (TokenType.CODE, TokenType.IDENT):
+            raise self._error(
+                f"Expected a column name inside {func}(...), got {col_tok.value!r}"
+            )
+        column = self._advance().value
+        if self._peek().type != TokenType.RPAREN:
+            raise self._error(
+                f"Expected ')' after column name in {func}(...), got {self._peek().value!r}"
+            )
+        self._advance()                       # ')'
+
+        op_tok = self._peek()
+        if op_tok.type != TokenType.OP or op_tok.value not in (
+            ">", "<", ">=", "<=", "==", "!=",
+        ):
+            raise self._error(
+                f"Aggregate {func}({column}) must be followed by a comparison "
+                f"(>, <, >=, <=, ==, !=), got {op_tok.value!r}"
+            )
+        op = self._advance().value
+        val_tok = self._peek()
+        if val_tok.type not in (TokenType.INT, TokenType.FLOAT):
+            raise self._error(
+                f"Expected a numeric threshold after '{op}', got {val_tok.value!r}"
+            )
+        self._advance()
+        return AggregateExpr(func, column, op, float(val_tok.value))
 
     def _is_comparison_ahead(self) -> bool:
         """Look ahead to see if this is IDENT OP NUMBER (not a code list)."""

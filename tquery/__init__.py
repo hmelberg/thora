@@ -18,6 +18,31 @@ from tquery._codebook import (
 )
 from tquery._codes import extract_codes
 from tquery._evaluator import Evaluator
+
+# Optional backends — imports are deferred so `pip install tquery`
+# works without polars/duckdb installed. The dispatcher raises a
+# helpful error if the user asks for an unavailable backend.
+try:
+    from tquery._evaluator_polars import tquery_polars  # noqa: F401
+    _HAS_POLARS = True
+except ImportError:
+    _HAS_POLARS = False
+    tquery_polars = None  # type: ignore[assignment]
+
+try:
+    from tquery._evaluator_duckdb import tquery_duckdb  # noqa: F401
+    _HAS_DUCKDB = True
+except ImportError:
+    _HAS_DUCKDB = False
+    tquery_duckdb = None  # type: ignore[assignment]
+
+
+def _is_polars_df(df: Any) -> bool:
+    """Detect a polars DataFrame without importing polars at module load."""
+    cls = type(df)
+    if cls.__name__ != "DataFrame":
+        return False
+    return cls.__module__.startswith("polars")
 from tquery._incidence import (
     fit_decay,
     incidence,
@@ -46,6 +71,8 @@ from tquery._types import (
 
 __all__ = [
     "tquery",
+    "tquery_polars",
+    "tquery_duckdb",
     "count_persons",
     "event_counts",
     "multi_query",
@@ -78,7 +105,7 @@ __all__ = [
 __version__ = "0.1.0"
 
 
-def tquery(
+def _tquery_pandas(
     df: pd.DataFrame,
     expr: str,
     *,
@@ -89,11 +116,42 @@ def tquery(
     variables: dict[str, Any] | None = None,
     config: TQueryConfig | None = None,
 ) -> TQueryResult:
-    """Evaluate a temporal query expression against a DataFrame.
+    """The original pandas evaluator. The public ``tquery`` function is a
+    dispatcher that routes to this for pandas input."""
+    kw = _merge_kwargs(
+        config, pid=pid, date=date, cols=cols, sep=sep, variables=variables,
+    )
+    eval_kw = {k: v for k, v in kw.items()
+               if k in ("pid", "date", "cols", "sep", "variables")}
+    ast = parse(expr)
+    evaluator = Evaluator(df, **eval_kw)
+    row_mask = evaluator.evaluate(ast)
+    return TQueryResult(row_mask, df, kw["pid"], ast=ast, evaluator=evaluator)
+
+
+def tquery(
+    df: Any,
+    expr: str,
+    *,
+    backend: str | None = None,
+    pid: str | None = None,
+    date: str | None = None,
+    cols: str | list[str] | None = None,
+    sep: str | None = None,
+    variables: dict[str, Any] | None = None,
+    config: TQueryConfig | None = None,
+) -> TQueryResult:
+    """Evaluate a temporal query expression. Dispatches by backend.
 
     Args:
-        df: Event-level DataFrame, ideally sorted by (pid, date).
+        df: Event-level DataFrame. Pandas or Polars input drives backend
+            auto-detection; DuckDB requires explicit ``backend="duckdb"``.
         expr: A tquery expression string, e.g. 'K50 before K51'.
+        backend: Optional. One of ``"pandas"``, ``"polars"``, ``"duckdb"``.
+            When ``None`` (default), the backend is auto-detected from
+            the input type: ``pl.DataFrame`` → polars, anything else →
+            pandas. DuckDB has no input-type signal and must be requested
+            explicitly.
         pid: Column name for person ID. Falls back to active config.
         date: Column name for event date. Falls back to active config.
         cols: Column(s) to search for codes. Falls back to active config.
@@ -103,18 +161,65 @@ def tquery(
                 Explicit keyword args still override the config.
 
     Returns:
-        A TQueryResult with .count, .pids, .rows, .persons, .filter()
+        A result object with ``.count`` and ``.pids`` for every backend.
+        The pandas/polars paths return a full ``TQueryResult`` (also
+        with ``.rows``, ``.persons``, ``.filter()``). DuckDB returns a
+        minimal result with just ``.count`` and ``.pids``.
     """
-    kw = _merge_kwargs(
-        config, pid=pid, date=date, cols=cols, sep=sep, variables=variables,
+    common_kwargs = {
+        "pid": pid, "date": date, "cols": cols,
+        "sep": sep, "variables": variables,
+    }
+
+    if backend == "duckdb":
+        if not _HAS_DUCKDB:
+            raise ImportError(
+                "backend='duckdb' requires the duckdb package "
+                "(`pip install duckdb`)"
+            )
+        # DuckDB doesn't honour TQueryConfig today; pass kwargs through.
+        kw = {k: v for k, v in common_kwargs.items() if v is not None}
+        # Apply config defaults manually for DuckDB.
+        if config is None:
+            config = get_config()
+        kw.setdefault("pid", config.pid)
+        kw.setdefault("date", config.date)
+        if "cols" not in kw:
+            kw["cols"] = config.cols
+        if "sep" not in kw:
+            kw["sep"] = config.sep
+        if "variables" not in kw:
+            kw["variables"] = config.variables
+        return tquery_duckdb(df, expr, **kw)
+
+    if backend == "polars" or (backend is None and _is_polars_df(df)):
+        if not _HAS_POLARS:
+            raise ImportError(
+                "backend='polars' (or polars-typed input) requires the "
+                "polars package (`pip install polars`)"
+            )
+        kw = {k: v for k, v in common_kwargs.items() if v is not None}
+        if config is None:
+            config = get_config()
+        kw.setdefault("pid", config.pid)
+        kw.setdefault("date", config.date)
+        if "cols" not in kw:
+            kw["cols"] = config.cols
+        if "sep" not in kw:
+            kw["sep"] = config.sep
+        if "variables" not in kw:
+            kw["variables"] = config.variables
+        return tquery_polars(df, expr, **kw)
+
+    if backend in (None, "pandas"):
+        return _tquery_pandas(
+            df, expr, config=config, **common_kwargs,
+        )
+
+    raise ValueError(
+        f"Unknown backend: {backend!r}. "
+        f"Choose from 'pandas', 'polars', 'duckdb', or None for auto-detect."
     )
-    # Filter to only Evaluator-accepted kwargs
-    eval_kw = {k: v for k, v in kw.items()
-               if k in ("pid", "date", "cols", "sep", "variables")}
-    ast = parse(expr)
-    evaluator = Evaluator(df, **eval_kw)
-    row_mask = evaluator.evaluate(ast)
-    return TQueryResult(row_mask, df, kw["pid"], ast=ast, evaluator=evaluator)
 
 
 def count_persons(

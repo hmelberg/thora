@@ -25,3 +25,15 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Benchmark artifacts (regenerable via tools/bench_generate.py)
+bench/dataset_large.csv
+bench/results_*.jsonl
+
+# R build artifacts
+r/*.Rcheck/
+r/tquery/src/*.o
+r/tquery/src/*.so
+
+# Local-only data
+.claude/

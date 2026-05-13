@@ -57,6 +57,23 @@ df.tq.count('min 2 of K50')         # 0
 df.tq('K50 and K52').pids           # {1, 2}
 ```
 
+**Other backends.** The same `tq.tquery(...)` call works on Polars (auto-detected) and DuckDB (explicit):
+
+```python
+import polars as pl
+df_pl = pl.from_pandas(df)
+
+# Polars input is auto-detected — no API change
+tquery.tquery(df_pl, 'K50 before K51').count       # 1
+
+# DuckDB requires an explicit backend (works over pandas OR polars input)
+tquery.tquery(df, 'K50 before K51', backend='duckdb').count   # 1
+```
+
+DuckDB has a ~100 ms fixed setup cost but is 5–50× faster than pandas on heavy aggregate queries — see the [Backends](#backends) section. Legacy entry points `tquery.tquery_polars(...)` and `tquery.tquery_duckdb(...)` still work if you prefer explicit names.
+
+R users: install the package at `r/tquery/` and use `tquery::tquery(dt, expr)` from R.
+
 ---
 
 ## The Query Language
@@ -185,6 +202,29 @@ Negative ordinals count from the end and compose with windows, e.g. `K50 inside 
 | `glucose > 8` | Rows where glucose column exceeds 8 |
 | `hba1c >= 6.5` | Rows where hba1c is at least 6.5 |
 | `age == 50` | Rows where age equals 50 |
+
+#### Aggregate Expressions (v0.2+)
+
+Aggregates compute a scalar per person over a numeric column, then threshold it. `painkillers` and similar names below are **numeric column names**, not code patterns — see the [Aggregate Expressions](#aggregate-expressions) section below for the full story.
+
+| Expression | Meaning |
+|-----------|---------|
+| `sum(painkillers) > 300` | Person's total of the `painkillers` column exceeds 300 |
+| `mean(BP) > 140` | Person's mean BP exceeds 140 |
+| `min(BP) < 90` | Person ever had a BP below 90 |
+| `max(temp) > 39` | Person ever had a temperature above 39 |
+| `median(glucose) > 8` | Person's median glucose exceeds 8 |
+| `sd(BP) > 20` | Person's BP has high variability |
+| `count(BP) > 10` | Person has more than 10 non-NA BP measurements |
+| `range(BP) > 30` | Person's BP swings by more than 30 (max − min) |
+| `rise(BP) > 20` | BP rose by more than 20 at some point (max drawup) |
+| `fall(BP) > 20` | BP fell by more than 20 at some point (max drawdown) |
+| `sum(painkillers) > 300 inside 90 days after I21` | Sum over rows within 90 days after a heart attack |
+| `sum(painkillers) > 300 inside 90 days` | **Sliding** — any 90-day stretch where the rolling sum exceeds 300 |
+| `range(BP) > 20 inside 5 events` | Sliding 5-event window — any 5 consecutive measurements with range > 20 |
+| `rise(BP) > 20 inside 7 days` | Any 7-day stretch where BP rose by more than 20 |
+
+`min(IDENT)` / `max(IDENT)` (with parentheses) are **value aggregates** — distinct from `min N of K50` / `max N of K50` (count predicates). The parser disambiguates by the `(`.
 
 ---
 
@@ -334,6 +374,102 @@ For every positive `inside …` form, `outside …` gives the row-level compleme
 ```
 
 `outside` participates in the same precedence slot as `inside` and obeys the same parenthesisation rules.
+
+---
+
+### Aggregate Expressions
+
+Aggregate expressions answer questions about *numeric values* in your data, complementing the row/event/temporal questions covered above. They are person-level: each expression produces a per-person scalar (sum, mean, min/max value, range, etc.), which is then thresholded with a comparison operator.
+
+The argument of `sum(...)`, `mean(...)`, etc. is a **column name**, not a code pattern. The expected data shape is one numeric column per category — for example, in a prescription dataset you might pre-process so each ATC class has its own dose column (`painkillers`, `statins`, `antibiotics`), with `NA` in rows that don't belong to that class. The library then aggregates over non-NA values.
+
+#### Available functions
+
+| Function | Definition | Empty cohort | Single value |
+|---|---|---|---|
+| `sum(col)` | Σ values | `0` | (the value) |
+| `mean(col)` / `avg(col)` | mean | `NA` (→ comparison False) | (the value) |
+| `min(col)` | minimum | `NA` | (the value) |
+| `max(col)` | maximum | `NA` | (the value) |
+| `median(col)` | sample median | `NA` | (the value) |
+| `sd(col)` | sample stdev (n−1) | `NA` | `NA` |
+| `var(col)` | sample variance (n−1) | `NA` | `NA` |
+| `count(col)` / `n(col)` | count of non-NA values | `0` | `1` |
+| `range(col)` | `max − min` | `NA` | `0` |
+| `rise(col)` | max drawup — `max over i ≤ j of (v[j] − v[i])` | `NA` | `0` |
+| `fall(col)` | max drawdown magnitude — symmetric for decreases | `NA` | `0` |
+
+NA values in the target column are skipped throughout (na.rm=True equivalent).
+
+#### Examples
+
+```python
+# Anyone with total painkiller DDDs > 300
+'sum(painkillers) > 300'
+
+# Anyone whose BP ever swung by more than 30 (max - min)
+'range(BP) > 30'
+
+# Pharmacoepi: cumulative dose threshold reached within any 90-day stretch
+'sum(painkillers) > 300 inside 90 days'
+
+# Anchored: drug use specifically after a heart attack
+'sum(painkillers) > 300 inside 90 days after I21'
+
+# BP rose by more than 20 at some point (signed direction matters)
+'rise(BP) > 20'
+
+# Composing with non-aggregate filters
+'K50 and sum(cost) > 1000'         # has K50 AND total cost > 1000
+'min 2 of N02A* and rise(BP) > 20' # at least 2 N02A* events AND BP swung up by 20
+
+# Sliding event window (any 5 consecutive measurements with a >20 swing)
+'range(BP) > 20 inside 5 events'
+
+# Anchored event window — within the 5 events after a stroke
+'mean(BP) > 140 inside 5 events after I63'
+```
+
+#### Windows
+
+Aggregates can be wrapped in `inside` to scope the aggregation:
+
+- **Standalone**: aggregate over *all* of the person's rows.
+- **Anchored** (`inside N days after Y` or `inside N events after Y`): aggregate over rows whose date / event-position falls in the window of any qualifying ref event.
+- **Sliding** (`inside N days` or `inside N events`, no anchor): the person matches if **any** N-day or N-event stretch of their timeline has an aggregate satisfying the predicate.
+
+The sliding window is right-anchored — for each row `r`, the window is `[r − N, r]` (days) or the `N` events ending at `r` (events). This matches the pharmacoepi convention of "accumulated in the trailing N days".
+
+`outside` is allowed over an *anchored* aggregate (aggregates over rows OUTSIDE the window for evaluable persons). `outside` over a sliding aggregate is a parse error — it has no defined semantics.
+
+#### `min` / `max` — value aggregate vs count prefix
+
+The keywords `min` and `max` serve double duty:
+
+- `min N of K50` / `max N of K50` (no parens) — count predicates (at least N / at most N events).
+- `min(IDENT)` / `max(IDENT)` (with parens) — value aggregates (smallest / largest column value).
+
+These don't overlap semantically — one counts events, the other inspects a numeric column. The parser disambiguates by a 1-token lookahead: `min(` selects the aggregate path, `min INT` selects the count-prefix path.
+
+#### `rise` and `fall` — signed range
+
+`range(BP)` is unsigned — it just tells you the magnitude of the swing. For direction-aware queries:
+
+- `rise(BP) > 20` — BP rose by more than 20 at some point. Definition: `max over i ≤ j of (v[j] − v[i])`. A peak that comes after any prior trough counts.
+- `fall(BP) > 20` — BP fell by more than 20 at some point. Symmetric.
+
+Both return non-negative magnitudes, so the comparison reads naturally. Both compose with windows like `range` does.
+
+```python
+# Did BP rise by more than 20 within any 7-day stretch?
+'rise(BP) > 20 inside 7 days'
+
+# Drop of more than 10 in any 3 consecutive measurements
+'fall(BP) > 10 inside 3 events'
+
+# Hypertensive surge within 30 days after a stressor
+'rise(BP) > 30 inside 30 days after Z73'
+```
 
 ---
 
@@ -1018,6 +1154,12 @@ df.tq('I63 inside 365 days after 1st of I48 and not B01A').count
 
 # New statin prescription 30-365 days after MI (washout period)
 df.tq('C10AA inside 30 to 365 days after I21').count
+
+# Patients whose BP rose by more than 20 mmHg in any 7-day stretch
+df.tq('rise(systolic_bp) > 20 inside 7 days').count
+
+# Cohort with cumulative blood-pressure-med exposure > 100 DDD in any 90-day window
+df.tq('sum(bp_meds_ddd) > 100 inside 90 days').count
 ```
 
 ### Diabetes
@@ -1031,6 +1173,12 @@ df.tq('min 3 of glucose>9 inside 365 days').count
 
 # Treatment delay: metformin within 90 days of diagnosis
 df.tq('A10BA02 inside 90 days after 1st of E11').count
+
+# Poor glucose control: mean HbA1c > 8 across measurements
+df.tq('mean(hba1c) > 8').count
+
+# Hypoglycaemic event — any glucose drop > 4 mmol/L between consecutive readings
+df.tq('fall(glucose) > 4 inside 2 events').count
 ```
 
 ### Inflammatory Bowel Disease
@@ -1075,9 +1223,54 @@ df.tq('@bio before @conv',
 
 ---
 
-## Performance
+## Backends
 
-tquery is designed for large datasets (millions of rows):
+The same query language runs on four backends. Pick the one that matches your data shape and performance need:
+
+| Backend | How to call | Input type | Strengths |
+|---|---|---|---|
+| pandas (reference) | `tquery.tquery(df, expr)` — default | `pd.DataFrame` | Cheapest for simple queries; widely available |
+| Polars | `tquery.tquery(df, expr)` — auto-detected by type | `pl.DataFrame` | Fast on sliding aggregates with native rolling functions |
+| DuckDB | `tquery.tquery(df, expr, backend="duckdb")` — explicit | pandas or polars | Fastest on compute-heavy queries (≥5× wins on `rise`/`fall`/sliding); ~100ms fixed overhead |
+| R / `data.table` | R package at `r/tquery/` | `data.table` / `data.frame` | Native R workflow; fast non-equi joins for windowed aggregates |
+
+All four implement the **same DSL** and pass the **same 78 golden fixtures** — `count`/`pids` are exactly identical across backends.
+
+**Dispatcher rules.** `tquery.tquery(...)` auto-detects the backend from input type: a `pl.DataFrame` routes to the Polars evaluator, anything else (pandas, etc.) routes to the pandas evaluator. DuckDB can't be inferred (it accepts both pandas and polars input), so it requires `backend="duckdb"`. The legacy entry points `tquery_polars(...)` and `tquery_duckdb(...)` are still exported for code that prefers explicit names.
+
+### Performance at 50k persons / 500k rows
+
+Indicative times — varies by query shape and dataset:
+
+| Query | pandas | polars | duckdb |
+|---|---:|---:|---:|
+| `K50` | 7 ms | 20 ms | ~100 ms |
+| `K50 before K51` | 18 ms | 45 ms | ~100 ms |
+| `sum(dose) > 300` | 15 ms | 34 ms | ~100 ms |
+| `sum > 300 inside 90 days after Y` (anchored) | 70 ms | 48 ms | 98 ms |
+| `sum > 300 inside 90 days` (sliding) | 478 ms | 83 ms | **108 ms** |
+| `rise(dose) > 30` | 1004 ms | 179 ms | **105 ms** |
+| `rise(dose) > 30 inside 90 days` | 874 ms | 5198 ms | **102 ms** |
+| `range(dose) > 30 inside 5 events` | 822 ms | **55 ms** | 107 ms |
+
+Rules of thumb:
+- **Simple queries** (< 30 ms in pandas): stay with pandas.
+- **Sliding aggregates with native polars functions** (`sum`/`mean`/`min`/`max`/`range`): Polars wins.
+- **Heavy queries on big data** (`rise` / `fall` sliding, complex temporals): DuckDB wins by 5–50×.
+- **R users**: use the R port — it's structurally identical to pandas thora and competitive on every query class.
+
+### Implementation notes
+
+- Backends share the parser and AST. The same `tquery._parser.parse(expr)` produces the same AST shape regardless of which backend evaluates it.
+- The R port lives in a separate installable R package (`r/tquery/`). It cross-checks parser AST output against the Python reference via a JSON serialisation in `tquery/_ast_json.py`.
+- DuckDB compiles each AST node to a SQL subquery. The compilation has 5 non-obvious wrinkles documented in `tquery/_evaluator_duckdb.py` (no ROWID on views, aggregate-of-window forbidden, RANGE frames need single ORDER BY, INTERVAL literals must be quoted, tie-breaking requires `__rid__`).
+- The Polars backend uses `join_asof` for anchored windows and native `rolling_*_by` for sliding ones; falls back to per-pid Python loops only for `rise`/`fall` over sliding day-windows.
+
+---
+
+## Performance (pandas backend)
+
+The pandas reference is designed for large datasets (millions of rows):
 
 - **Vectorized operations**: all code matching and temporal logic uses pandas/numpy, no Python loops over rows
 - **Pre-computed group boundaries**: person-group structure computed once at initialization
@@ -1085,7 +1278,4 @@ tquery is designed for large datasets (millions of rows):
 - **Efficient code matching**: `np.char.startswith` for wildcards (3-5x faster than pandas str accessor), `isin(set)` for exact matches
 - **merge_asof** for time-window queries (C-optimized in pandas)
 
-Benchmarks (on a standard laptop):
-- Simple code query on 1M rows: < 1 second
-- Temporal query (before/after) on 1M rows: < 2 seconds
-- Compound query on 100K rows: < 1 second
+For workloads with heavy sliding aggregates or `rise`/`fall` queries, the **DuckDB backend is dramatically faster** — see the Backends section above.
