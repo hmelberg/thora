@@ -141,6 +141,17 @@ The single `tq.tquery()` entry point auto-detects the backend from input type. P
 
 See [`docs/tquery_guide.md#backends`](docs/tquery_guide.md#backends) for performance details and how to choose.
 
+## Multiple DataFrames
+
+When events for the same person live in separate registries (diagnoses in one DataFrame, prescriptions in another), stack them with `tquery.combine`:
+
+```python
+combined = tq.combine({"npr": npr_df, "rx": rx_df})
+tq.count_persons(combined, "K50 in icd before L04AB* in atc")
+```
+
+The combined event log uses the existing per-atom `in COLUMN` routing — rows from one source have NaN in columns from another, so each atom matches only its natural rows.
+
 ## Documentation
 
 Full documentation: [`docs/tquery_guide.md`](docs/tquery_guide.md)

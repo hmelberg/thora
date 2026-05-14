@@ -116,6 +116,31 @@ df.tq.count('K50 before L04AB*', cols=['icd', 'atc'])
 
 When several atoms share the same column spec, the call-time `cols=` is usually cleaner than repeating `in COL` for each atom. Use per-atom `in` when atoms genuinely target different columns.
 
+#### Multiple DataFrames: `tquery.combine`
+
+When events for the same person live in **separate registries** — diagnoses in one DataFrame, prescriptions in another, etc. — use `tquery.combine` to stack them into one event log. The result is a regular DataFrame all four backends understand; the per-atom `in COLUMN` clause then routes naturally (a row from one source has NaN in columns from the other).
+
+```python
+import tquery as tq
+
+npr = pd.DataFrame({"pid": ..., "start_date": ..., "icd": [...]})   # diagnoses
+rx  = pd.DataFrame({"pid": ..., "start_date": ..., "atc": [...]})    # prescriptions
+
+# Dict form — named sources
+combined = tq.combine({"npr": npr, "rx": rx})
+tq.count_persons(combined, "K50 in icd before L04AB* in atc")
+
+# List/tuple form — auto-numbered names (source_0, source_1, ...)
+combined = tq.combine([npr, rx])
+
+# Or with explicit names
+combined = tq.combine([npr, rx], names=["npr", "rx"])
+```
+
+`combine` validates that each input has the configured `pid` and `date` columns, coerces dates to a common type, sorts by `(pid, date)`, and adds a `__source__` tag column (rename via `source_col=...`). It's designed to be called **once** at the start of an analysis session — most workflows run many queries on the same combined dataset, and concatenating once is far cheaper than per query.
+
+**Memory note**: stacking concatenates all rows from all sources, so peak memory is the sum of inputs plus NaN padding for non-shared columns. For very large registries (>100M rows) the DuckDB backend's native multi-table support is a better fit; for everyday workflows pandas concat is fine.
+
 #### Temporal Ordering
 
 | Expression | Meaning |

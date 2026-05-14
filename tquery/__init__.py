@@ -73,6 +73,7 @@ __all__ = [
     "tquery",
     "tquery_polars",
     "tquery_duckdb",
+    "combine",
     "count_persons",
     "event_counts",
     "multi_query",
@@ -220,6 +221,95 @@ def tquery(
         f"Unknown backend: {backend!r}. "
         f"Choose from 'pandas', 'polars', 'duckdb', or None for auto-detect."
     )
+
+
+def combine(
+    dfs: "list | tuple | dict[str, pd.DataFrame]",
+    names: "list[str] | None" = None,
+    *,
+    pid: str | None = None,
+    date: str | None = None,
+    source_col: str = "__source__",
+) -> pd.DataFrame:
+    """Stack event-level DataFrames into one with a source-tag column.
+
+    Useful when the same person has events in multiple registries
+    (e.g. NPR, prescription registry). The output is a single sorted
+    event log that all four tquery backends can query directly. The
+    existing ``in COLUMN`` clause naturally routes per atom: rows from
+    one source have NaN in columns that only exist in another source.
+
+    Args:
+        dfs: Either a list/tuple of DataFrames, or a dict mapping
+             source name → DataFrame. Dict keys take precedence over
+             the ``names`` argument.
+        names: Optional list of source names matched positionally with
+               ``dfs``. Ignored when ``dfs`` is a dict. Defaults to
+               ``"source_0"``, ``"source_1"``, ...
+        pid: Person-ID column name. Default from the active TQueryConfig.
+        date: Event-date column name. Default from the active TQueryConfig.
+        source_col: Name of the source-tag column. Default ``"__source__"``.
+
+    Returns:
+        A pandas DataFrame containing every row from every input, with
+        ``source_col`` set to the source name, dates coerced to datetime,
+        and sorted by ``(pid, date)`` for downstream temporal evaluation.
+
+    Example:
+        >>> npr = pd.DataFrame({"pid": [1, 2], "start_date": [...], "icd": ["K50", "K51"]})
+        >>> rx  = pd.DataFrame({"pid": [1, 1], "start_date": [...], "atc": ["L04AB02", "N02BE01"]})
+        >>> combined = tquery.combine({"npr": npr, "rx": rx})
+        >>> tquery.tquery(combined, "K50 in icd before L04AB* in atc").count
+    """
+    if isinstance(dfs, dict):
+        items: list[tuple[str, pd.DataFrame]] = list(dfs.items())
+    else:
+        df_list = list(dfs)
+        if names is None:
+            names = [f"source_{i}" for i in range(len(df_list))]
+        elif len(names) != len(df_list):
+            raise ValueError(
+                f"`names` has {len(names)} entries but `dfs` has {len(df_list)}"
+            )
+        items = list(zip(names, df_list))
+
+    if not items:
+        raise ValueError("`dfs` is empty — nothing to combine")
+
+    cfg = get_config()
+    pid = pid or cfg.pid
+    date = date or cfg.date
+
+    tagged: list[pd.DataFrame] = []
+    pid_dtypes: set[str] = set()
+    for name, df in items:
+        if pid not in df.columns:
+            raise TQueryColumnError(
+                f"pid column {pid!r} not found in DataFrame {name!r}; "
+                f"columns are {list(df.columns)}"
+            )
+        if date not in df.columns:
+            raise TQueryColumnError(
+                f"date column {date!r} not found in DataFrame {name!r}; "
+                f"columns are {list(df.columns)}"
+            )
+        pid_dtypes.add(str(df[pid].dtype))
+        d = df.copy()
+        d[source_col] = name
+        tagged.append(d)
+
+    if len(pid_dtypes) > 1:
+        warnings.warn(
+            f"pid columns have differing dtypes across sources: {pid_dtypes}. "
+            f"Concat will upcast to a common type, but consider aligning "
+            f"explicitly to avoid silent surprises.",
+            stacklevel=2,
+        )
+
+    combined = pd.concat(tagged, ignore_index=True)
+    combined[date] = pd.to_datetime(combined[date], errors="coerce")
+    combined = combined.sort_values([pid, date], kind="stable").reset_index(drop=True)
+    return combined
 
 
 def count_persons(
