@@ -270,3 +270,84 @@ def test_duckdb_native_matches_pandas_path():
     r_concat = tq.tquery(combined, "K50 in icd before L04AB* in atc",
                          pid="pid", date="start_date", backend="duckdb")
     assert sorted(r_native.pids) == sorted(r_concat.pids)
+
+
+# ---------- Polars native multi-DF (pl.concat with diagonal_relaxed) ----------
+
+
+def _npr_polars():
+    import polars as pl
+    from datetime import date
+    return pl.DataFrame({
+        "pid":        [1, 1, 2, 2, 3],
+        "start_date": [date(2020,1,1), date(2020,6,1),
+                       date(2020,2,1), date(2020,8,1), date(2020,3,1)],
+        "icd":        ["K50", "K51", "K50", "K52", "K51"],
+    })
+
+
+def _rx_polars():
+    import polars as pl
+    from datetime import date
+    return pl.DataFrame({
+        "pid":        [1, 2, 2, 3],
+        "start_date": [date(2020,9,1), date(2020,10,1),
+                       date(2021,1,1), date(2020,5,1)],
+        "atc":        ["L04AB02", "N02BE01", "L04AB04", "L04AB02"],
+    })
+
+
+def test_polars_native_multi_df_dict():
+    r = tq.tquery({"npr": _npr_polars(), "rx": _rx_polars()},
+                  "K50 in icd before L04AB* in atc",
+                  pid="pid", date="start_date", backend="polars")
+    assert sorted(r.pids) == [1, 2]
+
+
+def test_polars_native_multi_df_tuple():
+    r = tq.tquery((_npr_polars(), _rx_polars()),
+                  "K50 in icd before L04AB* in atc",
+                  pid="pid", date="start_date", backend="polars")
+    assert sorted(r.pids) == [1, 2]
+
+
+def test_polars_native_multi_df_mixed_pandas_polars():
+    """Mixed pandas + polars input gets normalised at the boundary."""
+    r = tq.tquery({"npr": _npr_polars().to_pandas(), "rx": _rx_polars()},
+                  "K50 in icd before L04AB* in atc",
+                  pid="pid", date="start_date", backend="polars")
+    assert sorted(r.pids) == [1, 2]
+
+
+def test_polars_native_multi_df_bail_out_query():
+    """`not K50` falls back to full combine via _polars_combine."""
+    r = tq.tquery((_npr_polars(), _rx_polars()), "not K50",
+                  pid="pid", date="start_date", backend="polars")
+    # pid 3 has only K51 → matches `not K50`.
+    assert 3 in r.pids
+    assert 1 not in r.pids
+    assert 2 not in r.pids
+
+
+def test_polars_native_matches_pandas_path():
+    """Cross-backend parity on polars multi-DF input."""
+    npr_pl, rx_pl = _npr_polars(), _rx_polars()
+    r_polars = tq.tquery({"npr": npr_pl, "rx": rx_pl},
+                         "K50 in icd before L04AB* in atc",
+                         pid="pid", date="start_date", backend="polars")
+    r_pandas = tq.tquery({"npr": npr_pl.to_pandas(), "rx": rx_pl.to_pandas()},
+                         "K50 in icd before L04AB* in atc",
+                         pid="pid", date="start_date")
+    assert sorted(r_polars.pids) == sorted(r_pandas.pids)
+
+
+def test_polars_native_config_backend_works():
+    """Polars multi-DF works when backend is set via tq.set_backend."""
+    tq.set_backend("polars")
+    try:
+        r = tq.tquery((_npr_polars(), _rx_polars()),
+                      "K50 in icd before L04AB* in atc",
+                      pid="pid", date="start_date")
+        assert sorted(r.pids) == [1, 2]
+    finally:
+        tq.set_backend(None)

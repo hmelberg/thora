@@ -161,19 +161,29 @@ In those cases, smart-combine is a no-op vs. the eager `combine()` path.
 
 **Workflow note**: explicit `combine()` is still the right choice when you run many queries on the same data — concat once, query many. The implicit form is convenient for one-shot queries where pre-filtering also helps.
 
-**For very large registries** (>100M rows) — DuckDB now has **native multi-DataFrame support**:
+**Both DuckDB and Polars have native multi-DataFrame support** that avoids any pandas-side concat:
 
 ```python
-# Each source registered as a separate DuckDB table; unified via
-# UNION ALL BY NAME inside the engine. No pandas concat ever happens.
+# DuckDB — UNION ALL BY NAME inside the engine
 tq.count_persons({"npr": npr_df, "rx": rx_df, "proc": proc_df},
                  "K50 in icd before L04AB* in atc",
                  backend="duckdb")
+
+# Polars — pl.concat(how="diagonal_relaxed") inside polars
+tq.count_persons({"npr": npr_pl, "rx": rx_pl},
+                 "K50 in icd before L04AB* in atc",
+                 backend="polars")
 ```
 
-Same API as the pandas / polars path — pass a list, tuple, or dict to any backend. The DuckDB code path bypasses `combine` entirely: each source becomes its own registered DuckDB table, and the `events` view is built as `UNION ALL BY NAME` across them. Schema alignment (NULL-padding columns that exist in one source but not another), date casting, and source tagging all happen inside DuckDB. The SQL compiler doesn't change — it queries `events` the same way it would for single-DataFrame input.
+| Backend | Combine primitive | Schema alignment |
+|---|---|---|
+| pandas | `pd.concat` + NaN-padding | manual via `combine` helper |
+| polars | `pl.concat(how="diagonal_relaxed")` | automatic — missing columns fill null, mismatched numeric types widen |
+| DuckDB | `UNION ALL BY NAME` | automatic — same |
 
-For workloads where peak pandas memory is the limit, this is the architectural fix.
+Both polars and DuckDB native paths support the AST-driven pre-filter optimisation: for code-pattern queries each source is reduced to relevant rows before the union. Bail-out cases (NotExpr, AggregateExpr, etc.) fall through to a full combine without regression.
+
+For mixed pandas+polars inputs to the polars backend, individual pandas DataFrames are converted via `pl.from_pandas` at the boundary — invisible to the caller.
 
 #### Temporal Ordering
 

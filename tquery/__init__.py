@@ -210,26 +210,41 @@ def tquery(
     #   native UNION ALL BY NAME via tquery_duckdb — no pandas-side
     #   concat, no in-memory pre-filter. Predicate pushdown handles the
     #   row reduction.
-    # - For pandas / polars: stack into a single event log first, with
-    #   an AST-driven row pre-filter when the query allows it (Phase A+).
-    #   Bail-out cases (NotExpr, AggregateExpr, ComparisonAtom, EventAtom,
-    #   outside windows) fall back transparently to a full combine.
+    # - For Polars backend: native pl.concat(how="diagonal_relaxed") in
+    #   smart_combine_for_query_polars, with an AST-driven row pre-filter
+    #   built from polars expressions. Same bail-out rules.
+    # - For pandas: stack via pd.concat in smart_combine_for_query, with
+    #   the AST-driven row pre-filter (Phase A+).
+    # All paths bail out to a full combine transparently when the AST
+    # contains NotExpr / AggregateExpr / ComparisonAtom / EventAtom /
+    # outside windows.
     if _is_multi_df_input(df) and backend != "duckdb":
-        from tquery._smart_combine import smart_combine_for_query
         ast_for_filter = parse(expr)
         if config is None:
             _cfg = get_config()
         else:
             _cfg = config
-        df = smart_combine_for_query(
-            df, ast_for_filter,
-            combine_fn=combine,
-            pid=pid or _cfg.pid,
-            date=date or _cfg.date,
-            cols=cols if cols is not None else _cfg.cols,
-            sep=sep if sep is not None else _cfg.sep,
-            variables=variables if variables is not None else _cfg.variables,
-        )
+        if backend == "polars":
+            from tquery._smart_combine import smart_combine_for_query_polars
+            df = smart_combine_for_query_polars(
+                df, ast_for_filter,
+                pid=pid or _cfg.pid,
+                date=date or _cfg.date,
+                cols=cols if cols is not None else _cfg.cols,
+                sep=sep if sep is not None else _cfg.sep,
+                variables=variables if variables is not None else _cfg.variables,
+            )
+        else:
+            from tquery._smart_combine import smart_combine_for_query
+            df = smart_combine_for_query(
+                df, ast_for_filter,
+                combine_fn=combine,
+                pid=pid or _cfg.pid,
+                date=date or _cfg.date,
+                cols=cols if cols is not None else _cfg.cols,
+                sep=sep if sep is not None else _cfg.sep,
+                variables=variables if variables is not None else _cfg.variables,
+            )
 
     common_kwargs = {
         "pid": pid, "date": date, "cols": cols,
