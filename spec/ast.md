@@ -67,7 +67,8 @@ A person-level aggregate over a numeric column, compared against a threshold. Pr
 | `func` | `str` | One of `"sum"`, `"mean"`, `"avg"`, `"min"`, `"max"`, `"median"`, `"sd"`, `"var"`, `"count"`, `"n"`, `"range"`, `"rise"`, `"fall"`. `"avg"` is a synonym for `"mean"`; `"n"` is a synonym for `"count"`. `"range"` = `max(col) - min(col)` (v0.2.1). `"rise"` = max drawup; `"fall"` = max drawdown (v0.2.2). |
 | `column` | `str` | Numeric column name. The column must exist in the input data and be numeric. |
 | `op` | `str` | Comparison operator: `">"`, `"<"`, `">="`, `"<="`, `"=="`, `"!="`. |
-| `value` | `float` | Threshold value. |
+| `value` | `float` | Threshold value. For `relative=true` (v0.2.3), the parser stores the fraction (10% → 0.10), so the evaluator compares the aggregate ratio directly to this field. |
+| `relative` | `bool` | When `true` (v0.2.3), the aggregate is computed as a relative magnitude: `(v[j] - v[i]) / v[i]` for `rise`, `(v[i] - v[j]) / v[i]` for `fall`. Only `rise` and `fall` accept `relative=true`. Default `false`. |
 
 **Invariants.**
 - `func` is one of the listed values; `"min"` / `"max"` are *aggregate* operations here, not the existing count-prefix `min` / `max`. They are distinguished syntactically (function-call form).

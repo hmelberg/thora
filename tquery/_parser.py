@@ -49,6 +49,7 @@ class TokenType(Enum):
     RPAREN = auto()
     COMMA = auto()
     AT = auto()          # @
+    PERCENT = auto()     # % — postfix on aggregate threshold (v0.2.3)
     KEYWORD = auto()     # before, after, and, or, ...
     ORDINAL = auto()     # 1st, 2nd, 3rd, 4th, ...
     IDENT = auto()       # column names (when not a keyword or code)
@@ -100,6 +101,7 @@ _TOKEN_PATTERNS: list[tuple[str, TokenType | None]] = [
     (r"\)", TokenType.RPAREN),
     (r",", TokenType.COMMA),
     (r"@", TokenType.AT),
+    (r"%", TokenType.PERCENT),
     (r">=|<=|!=|==|[><+\-]", TokenType.OP),
     (r"\d+(st|nd|rd|th)\b", TokenType.ORDINAL),              # 1st, 2nd, 3rd, 4th
     (r"\d+\.\d+", TokenType.FLOAT),                          # 8.5
@@ -647,7 +649,21 @@ class Parser:
                 f"Expected a numeric threshold after '{op}', got {val_tok.value!r}"
             )
         self._advance()
-        return AggregateExpr(func, column, op, float(val_tok.value))
+        # v0.2.3: optional `%` suffix → relative-magnitude comparison.
+        # Only meaningful for rise/fall (relative spread of range is
+        # ambiguous; deferred). The threshold is normalised to a
+        # fraction at parse time, so 10% → 0.10 in the AST.
+        value = float(val_tok.value)
+        relative = False
+        if self._at_type(TokenType.PERCENT):
+            self._advance()
+            if func not in ("rise", "fall"):
+                raise self._error(
+                    f"'%' threshold is only supported for `rise` and `fall`, not '{func}'"
+                )
+            relative = True
+            value = value / 100.0
+        return AggregateExpr(func, column, op, value, relative=relative)
 
     def _is_comparison_ahead(self) -> bool:
         """Look ahead to see if this is IDENT OP NUMBER (not a code list)."""

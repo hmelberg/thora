@@ -45,11 +45,16 @@ class AggregateExpr:
     set, the within is *anchored* (aggregate over rows in the window);
     without direction/ref, the within is *sliding* (any N-day stretch
     in the person's timeline). See ``spec/semantics.md``.
+
+    ``relative`` (v0.2.3) flags a percentage threshold: ``rise(BP) > 10%``
+    means the maximum *relative* drawup (gain ÷ earlier value) exceeds
+    0.10. Only supported for ``rise`` and ``fall``.
     """
-    func: str   # 'sum'|'mean'|'avg'|'min'|'max'|'median'|'sd'|'var'|'count'|'n'
+    func: str   # 'sum'|'mean'|'avg'|'min'|'max'|'median'|'sd'|'var'|'count'|'n'|'range'|'rise'|'fall'
     column: str
     op: str     # '>', '<', '>=', '<=', '==', '!='
     value: float
+    relative: bool = False  # True ⇔ `%` suffix; only for rise/fall
 
 
 @dataclass(frozen=True, slots=True)

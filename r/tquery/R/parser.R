@@ -40,6 +40,7 @@
   list(re = "^\\)",                                                   type = "RPAREN"),
   list(re = "^,",                                                     type = "COMMA"),
   list(re = "^@",                                                     type = "AT"),
+  list(re = "^%",                                                     type = "PERCENT"),
   list(re = "^(>=|<=|!=|==|[><+\\-])",                                type = "OP"),
   list(re = "^\\d+(st|nd|rd|th)\\b",                                  type = "ORDINAL"),
   list(re = "^\\d+\\.\\d+",                                           type = "FLOAT"),
@@ -432,7 +433,17 @@ parse_query <- function(expr) {
                       op, deparse(val_tok$value)))
   }
   .advance(p)
-  new_aggregate_expr(func, column, op, as.numeric(val_tok$value))
+  value <- as.numeric(val_tok$value)
+  relative <- FALSE
+  if (.at_type(p, "PERCENT")) {
+    .advance(p)
+    if (!(func %in% c("rise", "fall"))) {
+      .error(p, sprintf("'%%' threshold is only supported for `rise` and `fall`, not '%s'", func))
+    }
+    relative <- TRUE
+    value <- value / 100
+  }
+  new_aggregate_expr(func, column, op, value, relative = relative)
 }
 
 .is_comparison_ahead <- function(p) {

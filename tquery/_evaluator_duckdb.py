@@ -191,9 +191,15 @@ class DuckDBCompiler:
                 f"FROM {source} GROUP BY {self.pid}"
             )
         if node.func == "rise":
-            return self._rise_fall_per_pid_sql(node, source, kind="rise")
+            return self._rise_fall_per_pid_sql(
+                node, source, kind="rise",
+                relative=getattr(node, "relative", False),
+            )
         if node.func == "fall":
-            return self._rise_fall_per_pid_sql(node, source, kind="fall")
+            return self._rise_fall_per_pid_sql(
+                node, source, kind="fall",
+                relative=getattr(node, "relative", False),
+            )
         sql_fn = _AGG_FUNC_SQL[node.func]
         col_expr = node.column
         return (
@@ -201,28 +207,36 @@ class DuckDBCompiler:
             f"FROM {source} GROUP BY {self.pid}"
         )
 
-    def _rise_fall_per_pid_sql(self, node, source: str, kind: str) -> str:
+    def _rise_fall_per_pid_sql(self, node, source: str, kind: str, relative: bool = False) -> str:
         """Per-pid max drawup (rise) or max drawdown (fall) via a
         two-pass structure: window function in the inner SELECT
         (DuckDB rejects aggregate-of-window in one pass), then MAX
         over the result grouped by pid.
+
+        ``relative=True`` divides by the cummin (rise) or cummax (fall),
+        guarded by NULLIF so denominators ≤ 0 skip cleanly (NULL).
         """
         col = node.column
+        order = f"PARTITION BY {self.pid} ORDER BY {self.date}, __rid__"
         if kind == "rise":
-            inner_expr = (
-                f"({col} - MIN({col}) OVER (PARTITION BY {self.pid} ORDER BY {self.date}, __rid__))"
-            )
+            base_expr = f"MIN({col}) OVER ({order})"
+            num_expr = f"({col} - {base_expr})"
         else:
-            inner_expr = (
-                f"(MAX({col}) OVER (PARTITION BY {self.pid} ORDER BY {self.date}, __rid__) - {col})"
-            )
+            base_expr = f"MAX({col}) OVER ({order})"
+            num_expr = f"({base_expr} - {col})"
+        if relative:
+            # Pairs where the denominator is ≤ 0 produce NULL via NULLIF,
+            # which MAX skips silently.
+            inner_expr = f"({num_expr} / NULLIF(CASE WHEN {base_expr} > 0 THEN {base_expr} ELSE NULL END, 0))"
+        else:
+            inner_expr = num_expr
         inner = (
             f"SELECT {self.pid}, {inner_expr} AS _delta "
             f"FROM {source} "
             f"WHERE {col} IS NOT NULL"
         )
         return (
-            f"SELECT {self.pid}, MAX(_delta) AS _agg FROM ({inner}) _inner "
+            f"SELECT {self.pid}, COALESCE(MAX(_delta), 0) AS _agg FROM ({inner}) _inner "
             f"GROUP BY {self.pid}"
         )
 
@@ -578,28 +592,33 @@ class DuckDBCompiler:
         )
 
     def _sliding_days_drawup_sql(self, node: AggregateExpr, days: int, kind: str) -> str:
-        """Sliding window rise/fall implemented as a correlated lateral
-        join per row. Slow but matches semantics."""
+        """Sliding window rise/fall as a window function with a RANGE
+        frame. ``relative=True`` divides by the per-window cummin/cummax
+        (NULLIF guards non-positive denominators)."""
         col = node.column
+        relative = getattr(node, "relative", False)
+        frame = (
+            f"RANGE BETWEEN INTERVAL {days} DAY PRECEDING AND CURRENT ROW"
+        )
         if kind == "rise":
-            agg_expr = f"MAX(t.{col} - inner_min._mn)"
-            inner = (
-                f"(SELECT MIN(e2.{col}) AS _mn FROM {self.events} e2 "
-                f"WHERE e2.{self.pid} = t.{self.pid} "
-                f"AND e2.{self.date} BETWEEN t.{self.date} - INTERVAL {days} DAY AND t.{self.date}) inner_min"
+            base_expr = (
+                f"MIN({col}) OVER (PARTITION BY {self.pid} "
+                f"ORDER BY {self.date} {frame})"
             )
-            # For drawup within window we need per-row rolling min, then per-row (val - rolling_min),
-            # then max over rows. Use a single window function.
-            # RANGE frame requires a single ORDER BY column.
+            num_expr = f"({col} - {base_expr})"
+        else:
+            base_expr = (
+                f"MAX({col}) OVER (PARTITION BY {self.pid} "
+                f"ORDER BY {self.date} {frame})"
+            )
+            num_expr = f"({base_expr} - {col})"
+        if relative:
             inner_expr = (
-                f"({col} - MIN({col}) OVER (PARTITION BY {self.pid} ORDER BY {self.date} "
-                f"RANGE BETWEEN INTERVAL {days} DAY PRECEDING AND CURRENT ROW))"
+                f"({num_expr} / NULLIF(CASE WHEN {base_expr} > 0 "
+                f"THEN {base_expr} ELSE NULL END, 0))"
             )
         else:
-            inner_expr = (
-                f"(MAX({col}) OVER (PARTITION BY {self.pid} ORDER BY {self.date} "
-                f"RANGE BETWEEN INTERVAL {days} DAY PRECEDING AND CURRENT ROW) - {col})"
-            )
+            inner_expr = num_expr
         rolled = (
             f"SELECT {self.pid}, {inner_expr} AS _delta "
             f"FROM {self.events} WHERE {col} IS NOT NULL"
@@ -700,24 +719,21 @@ class DuckDBCompiler:
             expr = f"{fn}({col}) OVER ({partition} {frame})"
         elif node.func == "range":
             expr = f"(MAX({col}) OVER ({partition} {frame}) - MIN({col}) OVER ({partition} {frame}))"
-        elif node.func == "rise":
-            inner_expr = (
-                f"({col} - MIN({col}) OVER ({partition} {frame}))"
-            )
-            rolled = (
-                f"SELECT {self.pid}, {inner_expr} AS _delta "
-                f"FROM {self.events} WHERE {col} IS NOT NULL"
-            )
-            return (
-                f"SELECT * FROM {self.events} "
-                f"WHERE {self.pid} IN ("
-                f"SELECT DISTINCT {self.pid} FROM ({rolled}) _r "
-                f"WHERE _r._delta IS NOT NULL AND _r._delta {node.op} {node.value})"
-            )
-        elif node.func == "fall":
-            inner_expr = (
-                f"(MAX({col}) OVER ({partition} {frame}) - {col})"
-            )
+        elif node.func in ("rise", "fall"):
+            relative = getattr(node, "relative", False)
+            if node.func == "rise":
+                base_expr = f"MIN({col}) OVER ({partition} {frame})"
+                num_expr = f"({col} - {base_expr})"
+            else:
+                base_expr = f"MAX({col}) OVER ({partition} {frame})"
+                num_expr = f"({base_expr} - {col})"
+            if relative:
+                inner_expr = (
+                    f"({num_expr} / NULLIF(CASE WHEN {base_expr} > 0 "
+                    f"THEN {base_expr} ELSE NULL END, 0))"
+                )
+            else:
+                inner_expr = num_expr
             rolled = (
                 f"SELECT {self.pid}, {inner_expr} AS _delta "
                 f"FROM {self.events} WHERE {col} IS NOT NULL"

@@ -104,6 +104,8 @@ df[df.tq.mask("K50 inside 90 days after K51")]
 | **`range(BP) > 30 inside 5 events`** | **v0.2.1** — Range over a sliding event window |
 | **`rise(BP) > 20`** | **v0.2.2** — Max drawup (BP rose by > 20 at some point) |
 | **`fall(BP) > 20`** | **v0.2.2** — Max drawdown magnitude |
+| **`rise(BP) > 10%`** | **v0.2.3** — Relative rise: > 10% above an earlier measurement |
+| **`fall(BP) > 10%`** | **v0.2.3** — Relative fall: > 10% below an earlier peak |
 
 See [`docs/tquery_guide.md`](docs/tquery_guide.md) for the full syntax reference.
 

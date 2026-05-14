@@ -70,8 +70,14 @@ def _unwrap_shift(node: ASTNode) -> tuple[ASTNode, int]:
     return node, offset
 
 
-def _agg_scalar(v: np.ndarray, func: str) -> float:
-    """Per-cohort scalar aggregate over a 1-D numpy array. NA-skipping."""
+def _agg_scalar(v: np.ndarray, func: str, relative: bool = False) -> float:
+    """Per-cohort scalar aggregate over a 1-D numpy array. NA-skipping.
+
+    ``relative=True`` (v0.2.3) selects the percentage variant for
+    ``rise`` and ``fall``: gain ÷ earlier value (rise), or
+    drop ÷ earlier value (fall). Pairs where the denominator is ≤ 0
+    are excluded.
+    """
     v = v[~np.isnan(v)]
     if v.size == 0:
         return 0.0 if func in ("sum", "count", "n") else float("nan")
@@ -98,11 +104,25 @@ def _agg_scalar(v: np.ndarray, func: str) -> float:
     if func == "rise":
         if v.size == 1:
             return 0.0
-        return float((v - np.minimum.accumulate(v)).max())
+        if not relative:
+            return float((v - np.minimum.accumulate(v)).max())
+        cm = np.minimum.accumulate(v)
+        safe = cm > 0
+        if not safe.any():
+            return 0.0
+        ratio = np.where(safe, (v - cm) / np.where(safe, cm, 1.0), 0.0)
+        return float(ratio.max())
     if func == "fall":
         if v.size == 1:
             return 0.0
-        return float((np.maximum.accumulate(v) - v).max())
+        if not relative:
+            return float((np.maximum.accumulate(v) - v).max())
+        cm = np.maximum.accumulate(v)
+        safe = cm > 0
+        if not safe.any():
+            return 0.0
+        ratio = np.where(safe, (cm - v) / np.where(safe, cm, 1.0), 0.0)
+        return float(ratio.max())
     raise ValueError(f"Unknown aggregate function: {func!r}")
 
 
@@ -690,7 +710,7 @@ class PolarsEvaluator:
             per_pid_vals[p].append(v)
         matching = []
         for p, vs in per_pid_vals.items():
-            agg_v = _agg_scalar(np.array(vs), node.func)
+            agg_v = _agg_scalar(np.array(vs), node.func, relative=getattr(node, "relative", False))
             if op(agg_v, node.value) if not np.isnan(agg_v) else False:
                 matching.append(p)
         return pid.is_in(matching)
@@ -795,7 +815,7 @@ class PolarsEvaluator:
                 while dates[start] < lo:
                     start += 1
                 window = vals[start:r + 1]
-                a = _agg_scalar(window, node.func)
+                a = _agg_scalar(window, node.func, relative=getattr(node, "relative", False))
                 if not np.isnan(a) and op(a, threshold):
                     matching.add(p)
                     break
@@ -854,7 +874,7 @@ class PolarsEvaluator:
             for r in range(n):
                 lo = max(0, r - (window_size - 1))
                 window = vals[lo:r + 1]
-                a = _agg_scalar(window, node.func)
+                a = _agg_scalar(window, node.func, relative=getattr(node, "relative", False))
                 if not np.isnan(a) and op(a, threshold):
                     matching.add(p)
                     break

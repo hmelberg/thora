@@ -121,6 +121,13 @@ QUERIES: list[str] = [
     "fall(dose) > 30 inside 5 events",
     "rise(dose) > 30 inside 90 days",
     "rise(dose) > 30 inside 90 days after K50",
+    # v0.2.3: relative thresholds — rise/fall as percentages
+    "rise(dose) > 50%",
+    "rise(dose) > 200%",
+    "fall(dose) > 50%",
+    "fall(dose) > 90%",
+    "rise(dose) > 50% inside 5 events",
+    "rise(dose) > 100% inside 90 days",
 ]
 
 

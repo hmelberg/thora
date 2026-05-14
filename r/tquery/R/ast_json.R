@@ -8,7 +8,7 @@
   CodeAtom        = list(fields = c("codes", "columns"),                                  ctor = new_code_atom),
   EventAtom       = list(fields = character(),                                            ctor = function() new_event_atom()),
   ComparisonAtom  = list(fields = c("column", "op", "value"),                             ctor = new_comparison_atom),
-  AggregateExpr   = list(fields = c("func", "column", "op", "value"),                     ctor = new_aggregate_expr),
+  AggregateExpr   = list(fields = c("func", "column", "op", "value", "relative"),         ctor = new_aggregate_expr),
   PrefixExpr      = list(fields = c("kind", "n", "child"),                                ctor = new_prefix_expr),
   RangePrefixExpr = list(fields = c("min_n", "max_n", "child"),                           ctor = new_range_prefix_expr),
   NotExpr         = list(fields = "child",                                                ctor = new_not_expr),

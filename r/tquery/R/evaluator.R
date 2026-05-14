@@ -209,6 +209,15 @@ tq_eval.WithinExpr <- function(node, env) {
 
 # ---- Aggregate evaluation (v0.2) -----------------------------------------
 
+# v0.2.3: route to *_pct variants when AggregateExpr$relative is TRUE.
+.agg_fn_key <- function(node) {
+  if (isTRUE(node$relative) && node$func %in% c("rise", "fall")) {
+    paste0(node$func, "_pct")
+  } else {
+    node$func
+  }
+}
+
 .AGG_FNS <- list(
   sum    = function(x) sum(x, na.rm = TRUE),
   mean   = function(x) { x <- x[!is.na(x)]; if (length(x) == 0L) NA_real_ else mean(x) },
@@ -233,6 +242,26 @@ tq_eval.WithinExpr <- function(node, env) {
     if (length(x) == 0L) return(NA_real_)
     if (length(x) == 1L) return(0)
     max(cummax(x) - x)
+  },
+  # v0.2.3: relative variants — divide by cummin/cummax, skip pairs
+  # where the denominator is non-positive.
+  rise_pct = function(x) {
+    x <- x[!is.na(x)]
+    if (length(x) <= 1L) return(if (length(x) == 1L) 0 else NA_real_)
+    cm <- cummin(x)
+    safe <- cm > 0
+    if (!any(safe)) return(0)
+    ratio <- ifelse(safe, (x - cm) / ifelse(safe, cm, 1), 0)
+    max(ratio)
+  },
+  fall_pct = function(x) {
+    x <- x[!is.na(x)]
+    if (length(x) <= 1L) return(if (length(x) == 1L) 0 else NA_real_)
+    cm <- cummax(x)
+    safe <- cm > 0
+    if (!any(safe)) return(0)
+    ratio <- ifelse(safe, (cm - x) / ifelse(safe, cm, 1), 0)
+    max(ratio)
   }
 )
 
@@ -262,7 +291,7 @@ tq_eval.AggregateExpr <- function(node, env) {
     col_sub <- col
     pid_sub <- pid
   }
-  agg_fn <- .AGG_FNS[[node$func]]
+  agg_fn <- .AGG_FNS[[.agg_fn_key(node)]]
   op_fn  <- .OP_FNS[[node$op]]
 
   agg_dt <- data.table::data.table(p = pid_sub, v = col_sub)
@@ -308,7 +337,7 @@ tq_eval.AggregateExpr <- function(node, env) {
   pid   <- env$pid
   date  <- env$date
   vals  <- env$dt[[node$column]]
-  agg_fn <- .AGG_FNS[[node$func]]
+  agg_fn <- .AGG_FNS[[.agg_fn_key(node)]]
   op_fn  <- .OP_FNS[[node$op]]
 
   # For each row r, compute the aggregate over rows in same pid where
@@ -381,7 +410,7 @@ tq_eval.InsideExpr <- function(node, env) {
   if (!node$column %in% names(env$dt)) {
     stop(sprintf("Column '%s' not in data", node$column))
   }
-  agg_fn <- .AGG_FNS[[node$func]]
+  agg_fn <- .AGG_FNS[[.agg_fn_key(node)]]
   op_fn  <- .OP_FNS[[node$op]]
 
   pid   <- env$pid

@@ -20,6 +20,7 @@ Whitespace is insignificant except as a separator between tokens. Tokens are mat
 | `LPAREN` / `RPAREN` | `(` / `)` | grouping |
 | `COMMA` | `,` | code lists, column lists |
 | `AT` | `@` | variable reference prefix |
+| `PERCENT` | `%` | relative-magnitude suffix on aggregate threshold (v0.2.3) |
 | `KEYWORD` | reserved word match | see below |
 
 ### Keywords
@@ -96,7 +97,9 @@ atom              = "(" , query , ")"
                   | aggregate_atom            (* v0.2 *)
                   | code_expr ;
 
-aggregate_atom    = agg_func , "(" , IDENT , ")" , op , number ;
+aggregate_atom    = agg_func , "(" , IDENT , ")" , op , number , [ "%" ] ;
+                  (* `%` suffix (v0.2.3): only valid with `rise`/`fall`;
+                     normalises the threshold to a fraction (10% → 0.10) *)
 agg_func          = "sum" | "mean" | "avg" | "min" | "max"
                   | "median" | "sd" | "var" | "count" | "n"
                   | "range"        (* v0.2.1: max - min per person/window *)
@@ -146,6 +149,7 @@ These are not pure grammar rules — the parser enforces them after parsing.
 11. **Aggregate comparator is required.** `sum(col)` standalone is a parse error — must be followed by `>` / `<` / `>=` / `<=` / `==` / `!=` and a numeric literal.
 12. **`outside` over a sliding aggregate is rejected.** The combination `AGG(col) OP NUM outside N days` (no anchor, child is an `AggregateExpr`) has no sensible semantics and is a parse error in v0.2. `outside N days after Y` (anchored) is allowed and gives row-level complement of the anchored form.
 13. **`inside N events` without an anchor is allowed only over an `AggregateExpr`** (v0.2.1). For non-aggregate children, `inside N events` still requires an anchor (`after`/`before`/`around` + ref) — without an anchor it has no defined semantics. The bare form binds an aggregate to a sliding event window.
+14. **`%` threshold is only valid for `rise` and `fall`** (v0.2.3). `sum(col) > 300%`, `range(col) > 10%`, etc. are parse errors. For `rise(col) > X%` and `fall(col) > X%` the threshold is normalised to a fraction at parse time (`10%` becomes `0.10` in the AST), and the AggregateExpr's `relative` field is set to `true`.
 
 ## Output
 

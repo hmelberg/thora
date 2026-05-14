@@ -233,8 +233,10 @@ Aggregates compute a scalar per person over a numeric column, then threshold it.
 | `sd(BP) > 20` | Person's BP has high variability |
 | `count(BP) > 10` | Person has more than 10 non-NA BP measurements |
 | `range(BP) > 30` | Person's BP swings by more than 30 (max − min) |
-| `rise(BP) > 20` | BP rose by more than 20 at some point (max drawup) |
-| `fall(BP) > 20` | BP fell by more than 20 at some point (max drawdown) |
+| `rise(BP) > 20` | BP rose by more than 20 at some point (max drawup, absolute units) |
+| `fall(BP) > 20` | BP fell by more than 20 at some point (max drawdown, absolute units) |
+| `rise(BP) > 10%` | **v0.2.3** — BP rose by more than 10% relative to a prior measurement |
+| `fall(BP) > 10%` | **v0.2.3** — BP fell by more than 10% relative to a prior measurement |
 | `sum(painkillers) > 300 inside 90 days after I21` | Sum over rows within 90 days after a heart attack |
 | `sum(painkillers) > 300 inside 90 days` | **Sliding** — any 90-day stretch where the rolling sum exceeds 300 |
 | `range(BP) > 20 inside 5 events` | Sliding 5-event window — any 5 consecutive measurements with range > 20 |
@@ -486,6 +488,28 @@ Both return non-negative magnitudes, so the comparison reads naturally. Both com
 # Hypertensive surge within 30 days after a stressor
 'rise(BP) > 30 inside 30 days after Z73'
 ```
+
+**Relative thresholds with `%`** (v0.2.3). For `rise` and `fall`, suffix the
+threshold with `%` to compare percentage change instead of absolute units:
+
+```python
+# BP rose by more than 10% relative to some earlier measurement
+'rise(BP) > 10%'
+
+# Weight dropped by more than 5% in any 30-day window
+'fall(weight) > 5% inside 30 days'
+
+# Did the patient's HbA1c spike by 20%+ between consecutive measurements?
+'rise(hba1c) > 20% inside 2 events'
+```
+
+The `%` form is only valid for `rise` and `fall` — `range(col) > X%`,
+`sum(col) > X%`, etc. are parse errors (relative spread / sum has too
+many plausible definitions to pick one). Pairs where the earlier value
+is zero or negative are skipped (no well-defined relative change),
+matching the standard finance / pharmacoepi convention. `10%` is
+internally normalised to `0.10`; the AST has a `relative` flag so all
+backends agree.
 
 ---
 

@@ -85,6 +85,40 @@ def _fall_array(arr: np.ndarray) -> float:
     return float((np.maximum.accumulate(a) - a).max())
 
 
+# v0.2.3: relative variants. `(v[j] - v[i]) / v[i]` over i ≤ j, with
+# pairs where v[i] ≤ 0 excluded (standard finance convention).
+def _rise_pct_array(arr: np.ndarray) -> float:
+    a = arr[~np.isnan(arr)]
+    if a.size <= 1:
+        return 0.0 if a.size == 1 else float("nan")
+    cm = np.minimum.accumulate(a)
+    safe = cm > 0
+    if not safe.any():
+        return 0.0
+    ratio = np.where(safe, (a - cm) / np.where(safe, cm, 1.0), 0.0)
+    return float(ratio.max())
+
+
+def _fall_pct_array(arr: np.ndarray) -> float:
+    a = arr[~np.isnan(arr)]
+    if a.size <= 1:
+        return 0.0 if a.size == 1 else float("nan")
+    cm = np.maximum.accumulate(a)
+    safe = cm > 0
+    if not safe.any():
+        return 0.0
+    ratio = np.where(safe, (cm - a) / np.where(safe, cm, 1.0), 0.0)
+    return float(ratio.max())
+
+
+def _rise_pct_scalar(series: pd.Series) -> float:
+    return _rise_pct_array(series.dropna().to_numpy())
+
+
+def _fall_pct_scalar(series: pd.Series) -> float:
+    return _fall_pct_array(series.dropna().to_numpy())
+
+
 _OPS = {
     ">": operator.gt,
     "<": operator.lt,
@@ -363,18 +397,22 @@ class Evaluator:
     }
 
     @staticmethod
-    def _apply_agg(grouped: "pd.core.groupby.SeriesGroupBy", func: str) -> pd.Series:
+    def _apply_agg(
+        grouped: "pd.core.groupby.SeriesGroupBy",
+        func: str,
+        relative: bool = False,
+    ) -> pd.Series:
         """Apply an aggregate to a per-pid grouped Series. Handles
-        `range`, `rise`, `fall` directly; otherwise delegates to the
-        named method.
+        `range`, `rise`, `fall` directly (including the relative
+        variants for rise/fall when ``relative=True``); otherwise
+        delegates to the named method.
         """
         if func == "range":
             return grouped.max() - grouped.min()
         if func == "rise":
-            # Vectorised max drawup per group via cummin.
-            return grouped.apply(_rise_scalar)
+            return grouped.apply(_rise_pct_scalar if relative else _rise_scalar)
         if func == "fall":
-            return grouped.apply(_fall_scalar)
+            return grouped.apply(_fall_pct_scalar if relative else _fall_scalar)
         method = Evaluator._AGG_METHODS[func]
         return getattr(grouped, method)()
 
@@ -398,7 +436,10 @@ class Evaluator:
             sub_pid = pid
 
         # pandas .count() ignores NA; sum/mean/etc also have skipna=True default.
-        agg = self._apply_agg(col.groupby(sub_pid), node.func)
+        agg = self._apply_agg(
+            col.groupby(sub_pid), node.func,
+            relative=getattr(node, "relative", False),
+        )
 
         op_func = _OPS[node.op]
         matching = op_func(agg, node.value)
@@ -470,9 +511,11 @@ class Evaluator:
         if node.func == "range":
             rolling_agg = rolling.max() - rolling.min()
         elif node.func == "rise":
-            rolling_agg = rolling.apply(_rise_array, raw=True)
+            fn = _rise_pct_array if getattr(node, "relative", False) else _rise_array
+            rolling_agg = rolling.apply(fn, raw=True)
         elif node.func == "fall":
-            rolling_agg = rolling.apply(_fall_array, raw=True)
+            fn = _fall_pct_array if getattr(node, "relative", False) else _fall_array
+            rolling_agg = rolling.apply(fn, raw=True)
         else:
             method = self._AGG_METHODS[node.func]
             try:
@@ -540,9 +583,11 @@ class Evaluator:
         if node.func == "range":
             rolling_agg = rolling.max() - rolling.min()
         elif node.func == "rise":
-            rolling_agg = rolling.apply(_rise_array, raw=True)
+            fn = _rise_pct_array if getattr(node, "relative", False) else _rise_array
+            rolling_agg = rolling.apply(fn, raw=True)
         elif node.func == "fall":
-            rolling_agg = rolling.apply(_fall_array, raw=True)
+            fn = _fall_pct_array if getattr(node, "relative", False) else _fall_array
+            rolling_agg = rolling.apply(fn, raw=True)
         else:
             method = self._AGG_METHODS[node.func]
             rolling_agg = getattr(rolling, method)()

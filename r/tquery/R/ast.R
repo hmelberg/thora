@@ -24,11 +24,16 @@ new_comparison_atom <- function(column, op, value) {
 }
 
 # v0.2: person-level aggregate over a numeric column with comparison.
-new_aggregate_expr <- function(func, column, op, value) {
+new_aggregate_expr <- function(func, column, op, value, relative = FALSE) {
   stopifnot(func %in% c("sum","mean","avg","min","max","median","sd","var","count","n","range","rise","fall"))
   stopifnot(op %in% c(">", "<", ">=", "<=", "==", "!="))
+  # v0.2.3: `relative=TRUE` flags a `%` threshold (rise/fall only).
+  if (isTRUE(relative) && !(func %in% c("rise", "fall"))) {
+    stop("relative=TRUE only supported for rise/fall, not ", func)
+  }
   new_node("AggregateExpr",
-    func = func, column = column, op = op, value = as.numeric(value))
+    func = func, column = column, op = op,
+    value = as.numeric(value), relative = isTRUE(relative))
 }
 
 new_prefix_expr <- function(kind, n, child) {
