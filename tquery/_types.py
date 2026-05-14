@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import copy
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from functools import cached_property
 from typing import Any, TYPE_CHECKING
 
@@ -59,6 +59,10 @@ class TQueryConfig:
     variables: dict[str, Any] | None = None
     codebooks_dir: str | None = None
     name: str = "default"
+    # Default evaluator backend. None → auto-detect from input type
+    # (polars DataFrame → polars; everything else → pandas). Explicit
+    # backend= argument to tquery() always wins over this default.
+    backend: str | None = None
 
     def as_kwargs(self) -> dict[str, Any]:
         """Return config values as a keyword argument dict.
@@ -105,6 +109,22 @@ def use(config: TQueryConfig) -> None:
     """Set the active TQueryConfig globally."""
     global _active_config
     _active_config = config
+
+
+def set_backend(backend: str | None) -> None:
+    """Update the active config's default backend in place.
+
+    Convenience shorthand for
+    ``use(replace(get_config(), backend=backend))``. Pass ``None`` to
+    fall back to per-query auto-detection.
+
+    Examples:
+        >>> tquery.set_backend("duckdb")   # use DuckDB for every query
+        >>> tquery.set_backend("polars")   # ditto for Polars
+        >>> tquery.set_backend(None)       # back to auto-detect
+    """
+    global _active_config
+    _active_config = replace(_active_config, backend=backend)
 
 
 def _merge_kwargs(config: TQueryConfig | None, **explicit: Any) -> dict[str, Any]:

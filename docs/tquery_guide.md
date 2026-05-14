@@ -1342,7 +1342,40 @@ The same query language runs on four backends. Pick the one that matches your da
 
 All four implement the **same DSL** and pass the **same 78 golden fixtures** — `count`/`pids` are exactly identical across backends.
 
-**Dispatcher rules.** `tquery.tquery(...)` auto-detects the backend from input type: a `pl.DataFrame` routes to the Polars evaluator, anything else (pandas, etc.) routes to the pandas evaluator. DuckDB can't be inferred (it accepts both pandas and polars input), so it requires `backend="duckdb"`. The legacy entry points `tquery_polars(...)` and `tquery_duckdb(...)` are still exported for code that prefers explicit names.
+**Dispatcher rules.** `tquery.tquery(...)` resolves the backend in this order:
+
+1. Explicit `backend=` argument (always wins).
+2. `TQueryConfig.backend` field (set via `tq.use(...)` or `tq.set_backend(...)`).
+3. Auto-detect by input type: `pl.DataFrame` → polars, anything else → pandas.
+
+DuckDB can't be auto-detected (it accepts both pandas and polars input), so it requires either an explicit argument or a config default. The legacy entry points `tquery_polars(...)` and `tquery_duckdb(...)` are still exported for code that prefers explicit names.
+
+**Setting a default backend.** For batch workflows that always use the same backend, set it once in the config and skip the per-query argument:
+
+```python
+# Option 1: explicit shorthand
+tq.set_backend("duckdb")
+
+# Option 2: as part of a full config profile
+tq.use(tq.TQueryConfig(
+    pid="patient_id",
+    date="event_date",
+    cols="atc",
+    backend="duckdb",   # ← every query routes to DuckDB
+))
+
+# Now every query uses DuckDB without typing backend= each time
+tq.count_persons(df, "K50 before K51")
+tq.count_persons(df, "min 3 of K50 inside 100 days")
+
+# Per-query override still works
+tq.count_persons(df, "K50", backend="pandas")
+
+# Reset to auto-detect
+tq.set_backend(None)
+```
+
+If the config backend is `"polars"` and you pass a pandas DataFrame, the library converts it automatically via `pl.from_pandas`. DuckDB accepts both pandas and polars input natively, so no conversion is needed for that backend.
 
 ### Performance at 50k persons / 500k rows
 

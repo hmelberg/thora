@@ -66,6 +66,7 @@ from tquery._types import (
     TQuerySyntaxError,
     _merge_kwargs,
     get_config,
+    set_backend,
     use,
 )
 
@@ -101,6 +102,7 @@ __all__ = [
     "TQueryStringError",
     "use",
     "get_config",
+    "set_backend",
 ]
 
 __version__ = "0.1.0"
@@ -180,6 +182,28 @@ def tquery(
         with ``.rows``, ``.persons``, ``.filter()``). DuckDB returns a
         minimal result with just ``.count`` and ``.pids``.
     """
+    # Resolve backend default from config when not given explicitly.
+    # Precedence: explicit arg > config.backend > auto-detect by type.
+    if backend is None:
+        _cfg_for_backend = config if config is not None else get_config()
+        if _cfg_for_backend.backend is not None:
+            backend = _cfg_for_backend.backend
+
+    # If config says polars but input is pandas, convert at the boundary.
+    # DuckDB accepts both natively, so only the polars path needs this.
+    if backend == "polars" and _HAS_POLARS and not _is_polars_df(df):
+        import polars as _pl
+        if isinstance(df, pd.DataFrame):
+            df = _pl.from_pandas(df)
+        elif isinstance(df, dict):
+            df = {k: (_pl.from_pandas(v) if isinstance(v, pd.DataFrame) else v)
+                  for k, v in df.items()}
+        elif isinstance(df, (list, tuple)):
+            df = type(df)(
+                (_pl.from_pandas(v) if isinstance(v, pd.DataFrame) else v)
+                for v in df
+            )
+
     # Multi-DataFrame input: list/tuple/dict of DataFrames.
     #
     # - For DuckDB backend: pass through untouched. DuckDB does its own
