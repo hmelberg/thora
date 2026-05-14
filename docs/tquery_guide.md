@@ -237,6 +237,7 @@ Aggregates compute a scalar per person over a numeric column, then threshold it.
 | `fall(BP) > 20` | BP fell by more than 20 at some point (max drawdown, absolute units) |
 | `rise(BP) > 10%` | **v0.2.3** — BP rose by more than 10% relative to a prior measurement |
 | `fall(BP) > 10%` | **v0.2.3** — BP fell by more than 10% relative to a prior measurement |
+| `range(BP) > 10%` | **v0.2.4** — BP max is more than 10% higher than BP min — `(max − min) / min` |
 | `sum(painkillers) > 300 inside 90 days after I21` | Sum over rows within 90 days after a heart attack |
 | `sum(painkillers) > 300 inside 90 days` | **Sliding** — any 90-day stretch where the rolling sum exceeds 300 |
 | `range(BP) > 20 inside 5 events` | Sliding 5-event window — any 5 consecutive measurements with range > 20 |
@@ -503,13 +504,19 @@ threshold with `%` to compare percentage change instead of absolute units:
 'rise(hba1c) > 20% inside 2 events'
 ```
 
-The `%` form is only valid for `rise` and `fall` — `range(col) > X%`,
-`sum(col) > X%`, etc. are parse errors (relative spread / sum has too
-many plausible definitions to pick one). Pairs where the earlier value
-is zero or negative are skipped (no well-defined relative change),
-matching the standard finance / pharmacoepi convention. `10%` is
-internally normalised to `0.10`; the AST has a `relative` flag so all
-backends agree.
+The `%` form is supported for `rise`, `fall` (v0.2.3), and `range`
+(v0.2.4). `sum(col) > X%`, `mean(col) > X%`, etc. are parse errors —
+there's no canonical "fraction of" reading for those aggregates.
+
+`range(col) > X%` means `(max − min) / min > X / 100` — i.e., max is X%
+higher than min. Order-independent (matches the absolute `range`),
+denominator is the floor (the same intuition `rise` / `fall` use), and
+reads naturally as English. Pids where `min ≤ 0` are skipped (no
+well-defined relative spread) — same convention as rise/fall when the
+baseline is invalid.
+
+`10%` is internally normalised to `0.10`; the AST has a `relative`
+flag so all backends produce the same result.
 
 ---
 

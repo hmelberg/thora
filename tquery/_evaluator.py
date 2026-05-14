@@ -408,7 +408,13 @@ class Evaluator:
         delegates to the named method.
         """
         if func == "range":
-            return grouped.max() - grouped.min()
+            mn = grouped.min()
+            spread = grouped.max() - mn
+            if not relative:
+                return spread
+            # Relative range: (max - min) / min, skipping pids where
+            # min <= 0 (no well-defined relative spread).
+            return spread.where(mn > 0, other=float("nan")) / mn.where(mn > 0)
         if func == "rise":
             return grouped.apply(_rise_pct_scalar if relative else _rise_scalar)
         if func == "fall":
@@ -509,7 +515,11 @@ class Evaluator:
             .rolling(f"{days}D", closed="both")
         )
         if node.func == "range":
-            rolling_agg = rolling.max() - rolling.min()
+            rmax = rolling.max()
+            rmin = rolling.min()
+            rolling_agg = rmax - rmin
+            if getattr(node, "relative", False):
+                rolling_agg = rolling_agg.where(rmin > 0) / rmin.where(rmin > 0)
         elif node.func == "rise":
             fn = _rise_pct_array if getattr(node, "relative", False) else _rise_array
             rolling_agg = rolling.apply(fn, raw=True)
@@ -581,7 +591,11 @@ class Evaluator:
         grouped = frame.groupby(pid_col)[node.column]
         rolling = grouped.rolling(window=window_size, min_periods=1)
         if node.func == "range":
-            rolling_agg = rolling.max() - rolling.min()
+            rmax = rolling.max()
+            rmin = rolling.min()
+            rolling_agg = rmax - rmin
+            if getattr(node, "relative", False):
+                rolling_agg = rolling_agg.where(rmin > 0) / rmin.where(rmin > 0)
         elif node.func == "rise":
             fn = _rise_pct_array if getattr(node, "relative", False) else _rise_array
             rolling_agg = rolling.apply(fn, raw=True)

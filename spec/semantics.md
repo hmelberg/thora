@@ -84,6 +84,7 @@ A person-level aggregate over a numeric column, compared to a threshold.
 | `fall` (v0.2.2) | Max drawdown: `max over i≤j of (v[i] − v[j])` (returned as a non-negative magnitude) | `NA` for empty; `0` for single value |
 | `rise`, `relative=true` (v0.2.3) | Max relative drawup: `max over i≤j (and v[i]>0) of (v[j] − v[i]) / v[i]` | `NA` for empty; `0` for single value or if no v[i]>0 pair exists |
 | `fall`, `relative=true` (v0.2.3) | Max relative drawdown magnitude: `max over i≤j (and v[i]>0) of (v[i] − v[j]) / v[i]` | `NA` for empty; `0` for single value or if no v[i]>0 pair exists |
+| `range`, `relative=true` (v0.2.4) | Relative spread: `(max(v) − min(v)) / min(v)`, only when `min(v) > 0` | `NA` for empty; `0` for single value with `v > 0`; `NA` if `min ≤ 0` |
 
 **Relative-threshold convention** (v0.2.3). The `%` suffix in the DSL is normalised to a fraction at parse time, so `rise(col) > 10%` stores `value=0.10, relative=true` in the AST. The aggregate produces a unitless ratio in `[0, ∞)`; the comparison is against `value` directly. Pairs where the denominator `v[i]` is ≤ 0 are skipped — they have no well-defined relative change. This matches the standard finance/pharmacoepi convention for "max gain / drawdown percentage".
 

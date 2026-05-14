@@ -149,7 +149,7 @@ These are not pure grammar rules — the parser enforces them after parsing.
 11. **Aggregate comparator is required.** `sum(col)` standalone is a parse error — must be followed by `>` / `<` / `>=` / `<=` / `==` / `!=` and a numeric literal.
 12. **`outside` over a sliding aggregate is rejected.** The combination `AGG(col) OP NUM outside N days` (no anchor, child is an `AggregateExpr`) has no sensible semantics and is a parse error in v0.2. `outside N days after Y` (anchored) is allowed and gives row-level complement of the anchored form.
 13. **`inside N events` without an anchor is allowed only over an `AggregateExpr`** (v0.2.1). For non-aggregate children, `inside N events` still requires an anchor (`after`/`before`/`around` + ref) — without an anchor it has no defined semantics. The bare form binds an aggregate to a sliding event window.
-14. **`%` threshold is only valid for `rise` and `fall`** (v0.2.3). `sum(col) > 300%`, `range(col) > 10%`, etc. are parse errors. For `rise(col) > X%` and `fall(col) > X%` the threshold is normalised to a fraction at parse time (`10%` becomes `0.10` in the AST), and the AggregateExpr's `relative` field is set to `true`.
+14. **`%` threshold is valid for `rise`, `fall` (v0.2.3) and `range` (v0.2.4) only.** `sum(col) > 300%`, `mean(col) > 50%`, etc. are parse errors. For accepted aggregates the threshold is normalised to a fraction at parse time (`10%` becomes `0.10` in the AST), and the AggregateExpr's `relative` field is set to `true`.
 
 ## Output
 

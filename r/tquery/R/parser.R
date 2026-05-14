@@ -437,8 +437,8 @@ parse_query <- function(expr) {
   relative <- FALSE
   if (.at_type(p, "PERCENT")) {
     .advance(p)
-    if (!(func %in% c("rise", "fall"))) {
-      .error(p, sprintf("'%%' threshold is only supported for `rise` and `fall`, not '%s'", func))
+    if (!(func %in% c("rise", "fall", "range"))) {
+      .error(p, sprintf("'%%' threshold is only supported for `rise`, `fall`, and `range`, not '%s'", func))
     }
     relative <- TRUE
     value <- value / 100

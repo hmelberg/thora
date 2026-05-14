@@ -106,6 +106,7 @@ df[df.tq.mask("K50 inside 90 days after K51")]
 | **`fall(BP) > 20`** | **v0.2.2** — Max drawdown magnitude |
 | **`rise(BP) > 10%`** | **v0.2.3** — Relative rise: > 10% above an earlier measurement |
 | **`fall(BP) > 10%`** | **v0.2.3** — Relative fall: > 10% below an earlier peak |
+| **`range(BP) > 10%`** | **v0.2.4** — Relative spread: max is > 10% higher than min |
 
 See [`docs/tquery_guide.md`](docs/tquery_guide.md) for the full syntax reference.
 

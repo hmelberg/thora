@@ -27,9 +27,9 @@ new_comparison_atom <- function(column, op, value) {
 new_aggregate_expr <- function(func, column, op, value, relative = FALSE) {
   stopifnot(func %in% c("sum","mean","avg","min","max","median","sd","var","count","n","range","rise","fall"))
   stopifnot(op %in% c(">", "<", ">=", "<=", "==", "!="))
-  # v0.2.3: `relative=TRUE` flags a `%` threshold (rise/fall only).
-  if (isTRUE(relative) && !(func %in% c("rise", "fall"))) {
-    stop("relative=TRUE only supported for rise/fall, not ", func)
+  # `relative=TRUE` flags a `%` threshold (rise/fall v0.2.3; range v0.2.4).
+  if (isTRUE(relative) && !(func %in% c("rise", "fall", "range"))) {
+    stop("relative=TRUE only supported for rise/fall/range, not ", func)
   }
   new_node("AggregateExpr",
     func = func, column = column, op = op,

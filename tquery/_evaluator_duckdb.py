@@ -185,7 +185,16 @@ class DuckDBCompiler:
         source = self.events if row_filter_sql is None else f"({row_filter_sql})"
 
         if node.func == "range":
-            expr = f"MAX({node.column}) - MIN({node.column})"
+            relative = getattr(node, "relative", False)
+            mn_expr = f"MIN({node.column})"
+            spread = f"(MAX({node.column}) - {mn_expr})"
+            if relative:
+                expr = (
+                    f"({spread} / NULLIF(CASE WHEN {mn_expr} > 0 "
+                    f"THEN {mn_expr} ELSE NULL END, 0))"
+                )
+            else:
+                expr = spread
             return (
                 f"SELECT {self.pid}, {expr} AS _agg "
                 f"FROM {source} GROUP BY {self.pid}"
@@ -569,7 +578,15 @@ class DuckDBCompiler:
             fn = _AGG_FUNC_SQL[node.func]
             expr = f"{fn}({col}) OVER ({partition} {frame})"
         elif node.func == "range":
-            expr = f"(MAX({col}) OVER ({partition} {frame}) - MIN({col}) OVER ({partition} {frame}))"
+            mx = f"MAX({col}) OVER ({partition} {frame})"
+            mn = f"MIN({col}) OVER ({partition} {frame})"
+            if getattr(node, "relative", False):
+                expr = (
+                    f"(({mx} - {mn}) / NULLIF(CASE WHEN {mn} > 0 "
+                    f"THEN {mn} ELSE NULL END, 0))"
+                )
+            else:
+                expr = f"({mx} - {mn})"
         elif node.func == "rise":
             # max drawup over the window is MAX(col - cummin_within_window).
             # Implement as a correlated subquery — heavy but correct.
@@ -718,7 +735,15 @@ class DuckDBCompiler:
             fn = _AGG_FUNC_SQL[node.func]
             expr = f"{fn}({col}) OVER ({partition} {frame})"
         elif node.func == "range":
-            expr = f"(MAX({col}) OVER ({partition} {frame}) - MIN({col}) OVER ({partition} {frame}))"
+            mx = f"MAX({col}) OVER ({partition} {frame})"
+            mn = f"MIN({col}) OVER ({partition} {frame})"
+            if getattr(node, "relative", False):
+                expr = (
+                    f"(({mx} - {mn}) / NULLIF(CASE WHEN {mn} > 0 "
+                    f"THEN {mn} ELSE NULL END, 0))"
+                )
+            else:
+                expr = f"({mx} - {mn})"
         elif node.func in ("rise", "fall"):
             relative = getattr(node, "relative", False)
             if node.func == "rise":

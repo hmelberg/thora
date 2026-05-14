@@ -100,7 +100,13 @@ def _agg_scalar(v: np.ndarray, func: str, relative: bool = False) -> float:
     if func in ("count", "n"):
         return float(v.size)
     if func == "range":
-        return 0.0 if v.size == 1 else float(v.max() - v.min())
+        if v.size == 1:
+            return 0.0 if not relative else (0.0 if v[0] > 0 else float("nan"))
+        spread = float(v.max() - v.min())
+        if not relative:
+            return spread
+        mn = float(v.min())
+        return float("nan") if mn <= 0 else spread / mn
     if func == "rise":
         if v.size == 1:
             return 0.0
@@ -673,10 +679,14 @@ class PolarsEvaluator:
         else:
             sub_pid = pid
 
-        # Try fast polars-native paths for standard funcs.
+        # Try fast polars-native paths for standard funcs. Relative
+        # range/rise/fall fall through to the per-pid Python loop below,
+        # which routes via _agg_scalar(relative=True).
         op = _OPS[node.op]
+        relative = getattr(node, "relative", False)
         if node.func in ("sum", "mean", "avg", "min", "max", "median",
-                         "sd", "var", "count", "n", "range"):
+                         "sd", "var", "count", "n", "range") and not (
+                             relative and node.func == "range"):
             df_local = pl.DataFrame({"_p": sub_pid, "_v": col})
             if node.func == "sum":
                 agg = df_local.group_by("_p").agg(_agg=pl.col("_v").sum())
@@ -778,6 +788,8 @@ class PolarsEvaluator:
                     _agg=pl.col(node.column).rolling_max_by(self.date, period).over(self.pid)
                 )
             elif node.func == "range":
+                if getattr(node, "relative", False):
+                    raise TypeError("range% routes to generic")
                 rolled = self.df.with_columns(
                     _hi=pl.col(node.column).rolling_max_by(self.date, period).over(self.pid),
                     _lo=pl.col(node.column).rolling_min_by(self.date, period).over(self.pid),
@@ -792,7 +804,7 @@ class PolarsEvaluator:
             pass
 
         # Slow per-pid fallback for funcs polars doesn't natively support
-        # over date windows: median, sd, var, count, rise, fall.
+        # over date windows: median, sd, var, count, rise, fall, range%.
         return self._sliding_days_aggregate_generic(node, days)
 
     def _sliding_days_aggregate_generic(self, node, days):
@@ -842,6 +854,8 @@ class PolarsEvaluator:
                     _agg=pl.col(node.column).rolling_max(window_size=window_size, min_samples=1).over(self.pid)
                 )
             elif node.func == "range":
+                if getattr(node, "relative", False):
+                    raise TypeError("range% routes to generic")
                 rolled = self.df.with_columns(
                     _hi=pl.col(node.column).rolling_max(window_size=window_size, min_samples=1).over(self.pid),
                     _lo=pl.col(node.column).rolling_min(window_size=window_size, min_samples=1).over(self.pid),

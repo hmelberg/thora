@@ -211,7 +211,7 @@ tq_eval.WithinExpr <- function(node, env) {
 
 # v0.2.3: route to *_pct variants when AggregateExpr$relative is TRUE.
 .agg_fn_key <- function(node) {
-  if (isTRUE(node$relative) && node$func %in% c("rise", "fall")) {
+  if (isTRUE(node$relative) && node$func %in% c("rise", "fall", "range")) {
     paste0(node$func, "_pct")
   } else {
     node$func
@@ -262,6 +262,15 @@ tq_eval.WithinExpr <- function(node, env) {
     if (!any(safe)) return(0)
     ratio <- ifelse(safe, (cm - x) / ifelse(safe, cm, 1), 0)
     max(ratio)
+  },
+  # v0.2.4: relative range — (max - min) / min, skipping if min <= 0.
+  range_pct = function(x) {
+    x <- x[!is.na(x)]
+    if (length(x) == 0L) return(NA_real_)
+    mn <- min(x)
+    if (mn <= 0) return(NA_real_)
+    if (length(x) == 1L) return(0)
+    (max(x) - mn) / mn
   }
 )
 

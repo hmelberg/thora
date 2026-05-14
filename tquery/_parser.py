@@ -649,17 +649,18 @@ class Parser:
                 f"Expected a numeric threshold after '{op}', got {val_tok.value!r}"
             )
         self._advance()
-        # v0.2.3: optional `%` suffix → relative-magnitude comparison.
-        # Only meaningful for rise/fall (relative spread of range is
-        # ambiguous; deferred). The threshold is normalised to a
-        # fraction at parse time, so 10% → 0.10 in the AST.
+        # Optional `%` suffix → relative-magnitude comparison. Supported
+        # by `rise`/`fall` (v0.2.3) and `range` (v0.2.4). The threshold
+        # is normalised to a fraction at parse time, so 10% → 0.10.
+        # `range(col) > X%` reads as "max is X% higher than min".
         value = float(val_tok.value)
         relative = False
         if self._at_type(TokenType.PERCENT):
             self._advance()
-            if func not in ("rise", "fall"):
+            if func not in ("rise", "fall", "range"):
                 raise self._error(
-                    f"'%' threshold is only supported for `rise` and `fall`, not '{func}'"
+                    f"'%' threshold is only supported for `rise`, `fall`, "
+                    f"and `range`, not '{func}'"
                 )
             relative = True
             value = value / 100.0

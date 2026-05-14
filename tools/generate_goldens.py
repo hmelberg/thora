@@ -128,6 +128,12 @@ QUERIES: list[str] = [
     "fall(dose) > 90%",
     "rise(dose) > 50% inside 5 events",
     "rise(dose) > 100% inside 90 days",
+    # v0.2.4: relative range
+    "range(dose) > 50%",
+    "range(dose) > 100%",
+    "range(dose_k) > 200%",
+    "range(dose) > 50% inside 5 events",
+    "range(dose) > 100% inside 90 days",
 ]
 
 
