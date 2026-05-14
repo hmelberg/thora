@@ -180,15 +180,19 @@ def tquery(
         with ``.rows``, ``.persons``, ``.filter()``). DuckDB returns a
         minimal result with just ``.count`` and ``.pids``.
     """
-    # Multi-DataFrame input: list/tuple/dict of DataFrames. Stack them
-    # into a single event log first, with an AST-driven row pre-filter
-    # when the query allows it (Phase A+ in the design discussions).
-    # Bail-out cases (NotExpr, AggregateExpr, ComparisonAtom, EventAtom,
-    # outside windows) fall back transparently to a full combine.
-    if _is_multi_df_input(df):
+    # Multi-DataFrame input: list/tuple/dict of DataFrames.
+    #
+    # - For DuckDB backend: pass through untouched. DuckDB does its own
+    #   native UNION ALL BY NAME via tquery_duckdb — no pandas-side
+    #   concat, no in-memory pre-filter. Predicate pushdown handles the
+    #   row reduction.
+    # - For pandas / polars: stack into a single event log first, with
+    #   an AST-driven row pre-filter when the query allows it (Phase A+).
+    #   Bail-out cases (NotExpr, AggregateExpr, ComparisonAtom, EventAtom,
+    #   outside windows) fall back transparently to a full combine.
+    if _is_multi_df_input(df) and backend != "duckdb":
         from tquery._smart_combine import smart_combine_for_query
         ast_for_filter = parse(expr)
-        # Resolve config defaults so smart_combine sees concrete pid/date.
         if config is None:
             _cfg = get_config()
         else:

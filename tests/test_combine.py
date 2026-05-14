@@ -206,3 +206,67 @@ def test_smart_combine_duckdb_backend_consistency():
                          "K50 in icd before L04AB* in atc",
                          pid="pid", date="start_date", backend="duckdb")
     assert sorted(r_pandas.pids) == sorted(r_duckdb.pids)
+
+
+# ---------- DuckDB native multi-DF (UNION ALL BY NAME, no pandas concat) ----------
+
+
+def test_duckdb_native_multi_df_dict_input():
+    """DuckDB backend accepts dict input directly — no pandas concat."""
+    r = tq.tquery({"npr": _npr(), "rx": _rx()},
+                  "K50 in icd before L04AB* in atc",
+                  pid="pid", date="start_date", backend="duckdb")
+    assert sorted(r.pids) == [1, 2]
+
+
+def test_duckdb_native_multi_df_tuple_input():
+    r = tq.tquery((_npr(), _rx()),
+                  "K50 in icd before L04AB* in atc",
+                  pid="pid", date="start_date", backend="duckdb")
+    assert sorted(r.pids) == [1, 2]
+
+
+def test_duckdb_native_multi_df_list_input():
+    r = tq.tquery([_npr(), _rx()],
+                  "K50 in icd before L04AB* in atc",
+                  pid="pid", date="start_date", backend="duckdb")
+    assert sorted(r.pids) == [1, 2]
+
+
+def test_duckdb_native_multi_df_three_sources():
+    """3-way intersection across NPR / RX / procedure registry."""
+    proc = pd.DataFrame({
+        "pid":        [1, 2, 3],
+        "start_date": pd.to_datetime(["2020-09-01", "2020-11-01", "2020-09-01"]),
+        "ncsp":       ["JFB10", "FNG00", "JFB10"],
+    })
+    r = tq.tquery({"npr": _npr(), "rx": _rx(), "proc": proc},
+                  "K50 in icd and L04AB* in atc and JFB10 in ncsp",
+                  pid="pid", date="start_date", backend="duckdb")
+    assert sorted(r.pids) == [1]
+
+
+def test_duckdb_native_multi_df_handles_bail_out_queries():
+    """Even queries that bail out of pre-filter work natively in DuckDB."""
+    r = tq.tquery({"npr": _npr(), "rx": _rx()}, "not K50",
+                  pid="pid", date="start_date", backend="duckdb")
+    # Persons without K50: pid 3 (K51 only) and the pids only in rx (... but rx
+    # pids all overlap with npr in our fixtures, so just 3).
+    # The 'not' is at the pid level — anyone without K50 anywhere matches.
+    assert 3 in r.pids
+    assert 1 not in r.pids
+    assert 2 not in r.pids
+
+
+def test_duckdb_native_matches_pandas_path():
+    """End-to-end parity: native DuckDB multi-DF vs. pandas combine + DuckDB."""
+    npr, rx = _npr(), _rx()
+    # Native path
+    r_native = tq.tquery({"npr": npr, "rx": rx},
+                         "K50 in icd before L04AB* in atc",
+                         pid="pid", date="start_date", backend="duckdb")
+    # Pre-combine + single-DF DuckDB
+    combined = tq.combine({"npr": npr, "rx": rx})
+    r_concat = tq.tquery(combined, "K50 in icd before L04AB* in atc",
+                         pid="pid", date="start_date", backend="duckdb")
+    assert sorted(r_native.pids) == sorted(r_concat.pids)

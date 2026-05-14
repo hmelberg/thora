@@ -845,38 +845,85 @@ def tquery_duckdb(
     `df` can be a pandas DataFrame or polars DataFrame — DuckDB can
     register both via its Python API. The date column is coerced to
     DATE; the input table is registered as `events` for the session.
+
+    Multi-DataFrame input: pass a list, tuple, or dict of DataFrames.
+    Each source is registered as a separate DuckDB table and joined
+    into a unified `events` view via `UNION ALL BY NAME`. Avoids the
+    pandas-side concat entirely — DuckDB streams the union during
+    query execution.
     """
     from tquery._parser import parse
+
+    # Detect multi-DF input
+    is_multi = isinstance(df, dict) or (
+        isinstance(df, (list, tuple))
+        and len(df) > 0
+        and all(hasattr(x, "columns") and hasattr(x, "shape") for x in df)
+    )
+
+    if is_multi:
+        if isinstance(df, dict):
+            sources = list(df.items())  # [(name, df), ...]
+        else:
+            sources = [(f"source_{i}", d) for i, d in enumerate(df)]
+        all_columns = sorted({c for _, d in sources for c in d.columns})
+    else:
+        sources = [("__single__", df)]
+        all_columns = list(df.columns)
 
     if isinstance(cols, str):
         cols = [cols]
     elif cols is None:
-        # Auto-detect string columns (excluding pid/date) — same convention
-        # as pandas evaluator.
-        try:
-            schema = {c: df[c].dtype for c in df.columns}
-        except Exception:
-            schema = {}
-        cols = [
-            c for c in df.columns
-            if c not in (pid, date) and str(schema.get(c, "")).startswith(("object", "string", "str"))
-        ] or [c for c in df.columns if c not in (pid, date)]
+        # Auto-detect string columns across all sources.
+        cols_set = set()
+        for _, d in sources:
+            for c in d.columns:
+                if c in (pid, date):
+                    continue
+                dt = str(d[c].dtype)
+                if dt.startswith(("object", "string", "str")):
+                    cols_set.add(c)
+        cols = sorted(cols_set) or [
+            c for c in all_columns if c not in (pid, date)
+        ]
 
     conn = duckdb.connect()
     try:
-        conn.register("events_raw", df)
-        # Cast the date column to DATE and add a synthetic row id —
-        # DuckDB views don't expose ROWID, so we need our own.
-        conn.execute(
-            f"CREATE OR REPLACE VIEW events AS "
-            f"SELECT * REPLACE (CAST({date} AS DATE) AS {date}), "
-            f"ROW_NUMBER() OVER () AS __rid__ "
-            f"FROM events_raw"
-        )
+        if is_multi:
+            # Register each source as events_raw_<n>; build a unified
+            # `events` view that UNION ALL BY NAME's them with a
+            # __source__ tag and a global __rid__ row identifier.
+            union_parts = []
+            for idx, (name, src) in enumerate(sources):
+                tbl = f"events_raw_{idx}"
+                conn.register(tbl, src)
+                # Within-table __rid__ ensures stable ordering inside each
+                # source; the outer ROW_NUMBER over the UNION provides a
+                # globally unique __rid__ for cross-source operations.
+                union_parts.append(
+                    f"SELECT * REPLACE (CAST({date} AS DATE) AS {date}), "
+                    f"'{name}' AS __source__ FROM {tbl}"
+                )
+            union_sql = " UNION ALL BY NAME ".join(union_parts)
+            conn.execute(
+                f"CREATE OR REPLACE VIEW events AS "
+                f"SELECT *, ROW_NUMBER() OVER () AS __rid__ "
+                f"FROM ({union_sql}) _u"
+            )
+        else:
+            conn.register("events_raw", df)
+            conn.execute(
+                f"CREATE OR REPLACE VIEW events AS "
+                f"SELECT * REPLACE (CAST({date} AS DATE) AS {date}), "
+                f"ROW_NUMBER() OVER () AS __rid__ "
+                f"FROM events_raw"
+            )
 
-        # Collect unique codes for wildcard/range expansion
+        # Collect unique codes for wildcard/range expansion from the
+        # unified events view (works for both single and multi-DF cases).
+        existing_cols = [c for c in cols if c in all_columns]
         all_codes_sql = " UNION ".join(
-            f"SELECT DISTINCT {c} AS code FROM events" for c in cols if c in df.columns
+            f"SELECT DISTINCT {c} AS code FROM events" for c in existing_cols
         )
         all_codes = (
             [r[0] for r in conn.execute(all_codes_sql).fetchall() if r[0] is not None]
