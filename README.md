@@ -146,11 +146,16 @@ See [`docs/tquery_guide.md#backends`](docs/tquery_guide.md#backends) for perform
 When events for the same person live in separate registries (diagnoses in one DataFrame, prescriptions in another), stack them with `tquery.combine`:
 
 ```python
+# Explicit combine — best for many queries on the same data
 combined = tq.combine({"npr": npr_df, "rx": rx_df})
 tq.count_persons(combined, "K50 in icd before L04AB* in atc")
+
+# Implicit (one-shot) — `tquery` accepts a list/tuple/dict directly and
+# pre-filters each source before concat when the query allows
+tq.count_persons((npr_df, rx_df), "K50 in icd before L04AB* in atc")
 ```
 
-The combined event log uses the existing per-atom `in COLUMN` routing — rows from one source have NaN in columns from another, so each atom matches only its natural rows.
+The combined event log uses the existing per-atom `in COLUMN` routing — rows from one source have NaN in columns from another, so each atom matches only its natural rows. For pure code-pattern queries the implicit form skips ~99% of irrelevant rows before stacking.
 
 ## Documentation
 

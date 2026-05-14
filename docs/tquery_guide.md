@@ -137,9 +137,31 @@ combined = tq.combine([npr, rx])
 combined = tq.combine([npr, rx], names=["npr", "rx"])
 ```
 
-`combine` validates that each input has the configured `pid` and `date` columns, coerces dates to a common type, sorts by `(pid, date)`, and adds a `__source__` tag column (rename via `source_col=...`). It's designed to be called **once** at the start of an analysis session — most workflows run many queries on the same combined dataset, and concatenating once is far cheaper than per query.
+`combine` validates that each input has the configured `pid` and `date` columns, coerces dates to a common type, sorts by `(pid, date)`, and adds a `__source__` tag column (rename via `source_col=...`).
 
-**Memory note**: stacking concatenates all rows from all sources, so peak memory is the sum of inputs plus NaN padding for non-shared columns. For very large registries (>100M rows) the DuckDB backend's native multi-table support is a better fit; for everyday workflows pandas concat is fine.
+**Implicit combine**: you can pass the DataFrames directly to `tquery` and skip the explicit `combine()` call:
+
+```python
+# Equivalent to combine + tquery, with one less line
+tq.count_persons((npr, rx), "K50 in icd before L04AB* in atc")
+tq.count_persons({"npr": npr, "rx": rx}, "K50 in icd before L04AB* in atc")
+```
+
+When the input is a list/tuple/dict, `tquery` runs an AST-driven row pre-filter on each source before concatenating — so for code-pattern queries, only the relevant subset of each input is materialised. Concrete reductions: a query like `K50 in icd` against a 200M-row NPR can drop to thousands of rows before stacking with the prescription registry, often >100× memory savings.
+
+The pre-filter is automatic but conservative. It applies when the query is built from `CodeAtom` + temporal/window/prefix operators. It falls back to a full concat — same memory as plain `combine()` — when the query contains:
+
+- `not` / `never` (needs the full pid universe)
+- aggregate functions like `sum(col)`, `mean(col)`, `rise(col)` (needs every row of the numeric column)
+- column comparisons like `glucose > 8` (same)
+- the `event` / `events` atom (matches every row)
+- any window with `outside` (row-level complement)
+
+In those cases, smart-combine is a no-op vs. the eager `combine()` path.
+
+**Workflow note**: explicit `combine()` is still the right choice when you run many queries on the same data — concat once, query many. The implicit form is convenient for one-shot queries where pre-filtering also helps.
+
+**For very large registries** (>100M rows), the DuckDB backend's native row-set operations remain the best fit. Pre-filter helps the pandas path; DuckDB avoids the in-memory concat entirely.
 
 #### Temporal Ordering
 

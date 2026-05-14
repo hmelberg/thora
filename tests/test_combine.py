@@ -93,3 +93,116 @@ def test_combine_custom_source_col_name():
     out = tq.combine({"npr": _npr(), "rx": _rx()}, source_col="registry")
     assert "registry" in out.columns
     assert "__source__" not in out.columns
+
+
+# ---------- Smart-combine: tq.tquery accepts list/tuple/dict directly ----------
+
+
+def test_smart_combine_tuple_input_matches_explicit_combine():
+    """tq.tquery((df1, df2), expr) is equivalent to combine + tquery."""
+    explicit = tq.combine({"npr": _npr(), "rx": _rx()})
+    r_explicit = tq.tquery(explicit, "K50 in icd before L04AB* in atc",
+                           pid="pid", date="start_date")
+    r_implicit = tq.tquery((_npr(), _rx()), "K50 in icd before L04AB* in atc",
+                           pid="pid", date="start_date")
+    assert sorted(r_explicit.pids) == sorted(r_implicit.pids)
+
+
+def test_smart_combine_dict_input_matches_explicit_combine():
+    explicit = tq.combine({"npr": _npr(), "rx": _rx()})
+    r_explicit = tq.tquery(explicit, "K50 in icd before L04AB* in atc",
+                           pid="pid", date="start_date")
+    r_implicit = tq.tquery({"npr": _npr(), "rx": _rx()},
+                           "K50 in icd before L04AB* in atc",
+                           pid="pid", date="start_date")
+    assert sorted(r_explicit.pids) == sorted(r_implicit.pids)
+
+
+def test_smart_combine_pre_filter_reduces_rows():
+    """Safe AST → pre-filter drops non-matching rows before concat."""
+    from tquery._smart_combine import smart_combine_for_query
+    from tquery._parser import parse
+
+    npr, rx = _npr(), _rx()
+    ast = parse("K50 in icd")
+    filtered = smart_combine_for_query(
+        {"npr": npr, "rx": rx}, ast,
+        combine_fn=tq.combine,
+        pid="pid", date="start_date", cols=None, sep=None, variables=None,
+    )
+    full = tq.combine({"npr": npr, "rx": rx})
+    assert len(filtered) < len(full)
+    # Every kept row from NPR matches K50; RX rows drop entirely (no icd col).
+    assert (filtered["icd"] == "K50").all()
+
+
+def test_smart_combine_bail_out_not_expr_full_concat():
+    """`not K50` requires the full pid universe — falls back to full combine."""
+    from tquery._smart_combine import smart_combine_for_query
+    from tquery._parser import parse
+
+    npr, rx = _npr(), _rx()
+    ast = parse("not K50")
+    out = smart_combine_for_query(
+        {"npr": npr, "rx": rx}, ast,
+        combine_fn=tq.combine,
+        pid="pid", date="start_date", cols=None, sep=None, variables=None,
+    )
+    full = tq.combine({"npr": npr, "rx": rx})
+    assert len(out) == len(full)
+
+
+def test_smart_combine_bail_out_aggregate_full_concat():
+    """`sum(dose) > 100` needs all dose rows — falls back to full combine."""
+    from tquery._smart_combine import smart_combine_for_query
+    from tquery._parser import parse
+
+    npr, rx = _npr(), _rx()
+    npr["dose"] = [10, 20, 30, 40, 50]
+    rx["dose"] = [100, 200, 150, 80]
+    ast = parse("sum(dose) > 100")
+    out = smart_combine_for_query(
+        {"npr": npr, "rx": rx}, ast,
+        combine_fn=tq.combine,
+        pid="pid", date="start_date", cols=None, sep=None, variables=None,
+    )
+    full = tq.combine({"npr": npr, "rx": rx})
+    assert len(out) == len(full)
+
+
+def test_smart_combine_correct_under_pre_filter_for_temporal_query():
+    """Pre-filter + window evaluator must produce the same pids as full combine."""
+    npr, rx = _npr(), _rx()
+    full = tq.combine({"npr": npr, "rx": rx})
+
+    r_full = tq.tquery(full, "K50 in icd before L04AB* in atc",
+                       pid="pid", date="start_date")
+    r_smart = tq.tquery((npr, rx), "K50 in icd before L04AB* in atc",
+                        pid="pid", date="start_date")
+    assert sorted(r_full.pids) == sorted(r_smart.pids)
+
+
+def test_smart_combine_correct_under_bail_out():
+    """For bail-out queries, smart-combine must still produce correct results
+    via full concat."""
+    npr, rx = _npr(), _rx()
+    npr["dose"] = [10, 20, 30, 40, 50]
+    rx["dose"] = [100, 200, 150, 80]
+    full = tq.combine({"npr": npr, "rx": rx})
+
+    r_full = tq.tquery(full, "sum(dose) > 100", pid="pid", date="start_date")
+    r_smart = tq.tquery({"npr": npr, "rx": rx}, "sum(dose) > 100",
+                        pid="pid", date="start_date")
+    assert sorted(r_full.pids) == sorted(r_smart.pids)
+
+
+def test_smart_combine_duckdb_backend_consistency():
+    """All backends produce the same result on multi-DF input."""
+    npr, rx = _npr(), _rx()
+    r_pandas = tq.tquery({"npr": npr, "rx": rx},
+                         "K50 in icd before L04AB* in atc",
+                         pid="pid", date="start_date")
+    r_duckdb = tq.tquery({"npr": npr, "rx": rx},
+                         "K50 in icd before L04AB* in atc",
+                         pid="pid", date="start_date", backend="duckdb")
+    assert sorted(r_pandas.pids) == sorted(r_duckdb.pids)

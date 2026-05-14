@@ -130,6 +130,19 @@ def _tquery_pandas(
     return TQueryResult(row_mask, df, kw["pid"], ast=ast, evaluator=evaluator)
 
 
+def _is_multi_df_input(df: Any) -> bool:
+    """True when ``df`` is a list/tuple/dict of DataFrames (any flavour)."""
+    if isinstance(df, dict):
+        return len(df) > 0 and all(
+            hasattr(v, "columns") and hasattr(v, "shape") for v in df.values()
+        )
+    if isinstance(df, (list, tuple)):
+        return len(df) > 0 and all(
+            hasattr(v, "columns") and hasattr(v, "shape") for v in df
+        )
+    return False
+
+
 def tquery(
     df: Any,
     expr: str,
@@ -167,6 +180,29 @@ def tquery(
         with ``.rows``, ``.persons``, ``.filter()``). DuckDB returns a
         minimal result with just ``.count`` and ``.pids``.
     """
+    # Multi-DataFrame input: list/tuple/dict of DataFrames. Stack them
+    # into a single event log first, with an AST-driven row pre-filter
+    # when the query allows it (Phase A+ in the design discussions).
+    # Bail-out cases (NotExpr, AggregateExpr, ComparisonAtom, EventAtom,
+    # outside windows) fall back transparently to a full combine.
+    if _is_multi_df_input(df):
+        from tquery._smart_combine import smart_combine_for_query
+        ast_for_filter = parse(expr)
+        # Resolve config defaults so smart_combine sees concrete pid/date.
+        if config is None:
+            _cfg = get_config()
+        else:
+            _cfg = config
+        df = smart_combine_for_query(
+            df, ast_for_filter,
+            combine_fn=combine,
+            pid=pid or _cfg.pid,
+            date=date or _cfg.date,
+            cols=cols if cols is not None else _cfg.cols,
+            sep=sep if sep is not None else _cfg.sep,
+            variables=variables if variables is not None else _cfg.variables,
+        )
+
     common_kwargs = {
         "pid": pid, "date": date, "cols": cols,
         "sep": sep, "variables": variables,
