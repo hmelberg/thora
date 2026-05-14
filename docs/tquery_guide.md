@@ -92,13 +92,29 @@ R users: install the package at `r/tquery/` and use `tquery::tquery(dt, expr)` f
 
 #### Column Specification
 
+By default, every code expression searches in the same configured columns (`cols` argument, or auto-detected string columns). The `in COLUMN` clause overrides this **per atom** — different atoms in the same query can target different columns. This is the way to mix code systems (ICD diagnoses + ATC drugs) in one query:
+
 | Expression | Meaning |
 |-----------|---------|
-| `K50 in icd` | Search in the 'icd' column only |
+| `K50 in icd` | Search for K50 in the 'icd' column only |
 | `K50 in icd1, icd2, icd3` | Search in multiple named columns |
 | `K50 in icd*` | Search in all columns starting with 'icd' |
 | `K50 in icd1:icd10` | Search in columns icd1 through icd10 (positional slice) |
 | `K50 in icd1-icd10` | Search in columns icd1 through icd10 (alphabetic range) |
+| `K50 in icd before L04AB* in atc` | Two atoms, two different columns — Crohn's diagnosis (ICD) before biologic (ATC) |
+| `(K50 or K51) in icd and L04AB* in atc` | Per-atom routing composes through `and`/`or`/temporals |
+| `min 3 of L04AB* in atc inside 365 days` | Routing survives windows and prefixes |
+
+```python
+# Concrete example: separate ICD and ATC columns
+df.tq.count('K50 in icd before L04AB* in atc')
+
+# Or with a tidy long-format table where ICD and ATC live in separate
+# rows tagged by source — just configure cols at the call site
+df.tq.count('K50 before L04AB*', cols=['icd', 'atc'])
+```
+
+When several atoms share the same column spec, the call-time `cols=` is usually cleaner than repeating `in COL` for each atom. Use per-atom `in` when atoms genuinely target different columns.
 
 #### Temporal Ordering
 

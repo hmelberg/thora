@@ -519,7 +519,8 @@ class TQueryAccessor:
 
         if cols is None:
             cols = [c for c in self._df.columns
-                    if c not in (cfg.pid, cfg.date) and self._df[c].dtype == object]
+                    if c not in (cfg.pid, cfg.date)
+                    and pd.api.types.is_string_dtype(self._df[c])]
         elif isinstance(cols, str):
             cols = [cols]
 

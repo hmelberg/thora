@@ -234,7 +234,8 @@ def count_codes(
         Series indexed by code, values are counts, sorted descending.
     """
     if cols is None:
-        cols = [c for c in df.columns if c not in (pid, date) and df[c].dtype == object]
+        cols = [c for c in df.columns
+                if c not in (pid, date) and pd.api.types.is_string_dtype(df[c])]
     elif isinstance(cols, str):
         cols = [cols]
 

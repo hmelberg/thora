@@ -43,7 +43,8 @@ def _resolve_cols(
 ) -> list[str]:
     """Resolve column specification to a concrete list."""
     if cols is None:
-        return [c for c in df.columns if c not in (pid, date) and df[c].dtype == object]
+        return [c for c in df.columns
+                if c not in (pid, date) and pd.api.types.is_string_dtype(df[c])]
     if isinstance(cols, str):
         return [cols]
     return list(cols)

@@ -151,10 +151,12 @@ class Evaluator:
 
         # Resolve default columns for code matching
         if cols is None:
-            # Auto-detect: all object/string columns except pid and date
+            # Auto-detect: all string-like columns except pid and date.
+            # `is_string_dtype` covers pandas 2.x ('object'), pandas 3.x
+            # ('str' / Arrow-backed), and Categorical with string values.
             self._default_cols = [
                 c for c in df.columns
-                if c not in (pid, date) and df[c].dtype == object
+                if c not in (pid, date) and pd.api.types.is_string_dtype(df[c])
             ]
         elif isinstance(cols, str):
             self._default_cols = [cols]

@@ -639,7 +639,7 @@ def string_query_auto(
     if stringify_cols is None:
         resolved_cols = [
             c for c in df.columns
-            if c not in (pid_col, date_col) and df[c].dtype == object
+            if c not in (pid_col, date_col) and pd.api.types.is_string_dtype(df[c])
         ]
     elif isinstance(stringify_cols, str):
         resolved_cols = [stringify_cols]

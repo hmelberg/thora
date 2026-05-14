@@ -199,9 +199,11 @@ def get_matching_rows(
 
             for w in wildcards:
                 prefix = w[:-1]
-                vals = df[col].values
+                # `.to_numpy()` returns an object-dtype ndarray for any
+                # string-like column (object, str, categorical, Arrow-
+                # backed). Always-object lets the np.char fast path apply.
+                vals = df[col].to_numpy()
                 if vals.dtype == object:
-                    # Use numpy char operations for speed
                     str_vals = np.asarray(vals, dtype=str)
                     mask = mask | pd.Series(
                         np.char.startswith(str_vals, prefix),
