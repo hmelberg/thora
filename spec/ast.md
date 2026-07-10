@@ -190,7 +190,7 @@ Shorthand `inside N events after Y` ⇒ `min_events=1, max_events=N`.
 
 Positional-bounds window: rows whose date falls in `[min(bound_start dates), max(bound_end dates)]` per person.
 
-Spelled as `CHILD inside EXPR_A and EXPR_B`, e.g., `K50 inside 1st K51 and 5th K51`.
+Spelled as `CHILD inside EXPR_A to EXPR_B`, e.g., `K50 inside 1st K51 to 5th K51`.
 
 | Field | Type | Notes |
 |---|---|---|

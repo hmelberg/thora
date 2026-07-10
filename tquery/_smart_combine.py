@@ -55,6 +55,7 @@ from tquery._ast import (
     WithinExpr,
     WithinSpanExpr,
 )
+from tquery._codes import is_code_column
 
 try:
     import polars as pl
@@ -271,7 +272,7 @@ def smart_combine_for_query(
         else:
             default_cols = [
                 c for c in df.columns
-                if c not in (pid, date) and pd.api.types.is_string_dtype(df[c])
+                if c not in (pid, date) and is_code_column(df[c])
             ]
 
         df_mask = pd.Series(False, index=df.index)

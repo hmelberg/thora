@@ -353,19 +353,32 @@ const EXAMPLES = {
 const TQUERY_FILES = {};
 const GITHUB_RAW = "https://raw.githubusercontent.com/hmelberg/thora/main/";
 
+// Fetch a repo file same-origin first (works locally and on GitHub Pages,
+// keeping the sources version-consistent with this page), falling back to
+// the GitHub main branch (works when the page is opened standalone).
+async function fetchRepoFile(relPath) {
+  try {
+    const resp = await fetch(relPath);
+    if (resp.ok) return await resp.text();
+  } catch (e) {}
+  try {
+    const resp = await fetch(`${GITHUB_RAW}${relPath}`);
+    if (resp.ok) return await resp.text();
+  } catch (e) {}
+  return null;
+}
+
 async function loadTquerySource() {
   const modules = [
     "_ast.py", "_types.py", "_cache.py", "_codes.py", "_parser.py", "_prefix.py",
     "_temporal.py", "_evaluator.py", "_stringops.py", "_stringify.py",
     "_codebook.py", "_testdata.py", "_string_evaluator.py", "_incidence.py",
-    "__init__.py"
+    "_smart_combine.py", "__init__.py"
   ];
   for (const mod of modules) {
     if (TQUERY_FILES[mod]) continue;
-    try {
-      const resp = await fetch(`${GITHUB_RAW}tquery/${mod}`);
-      if (resp.ok) TQUERY_FILES[mod] = await resp.text();
-    } catch(e) {}
+    const content = await fetchRepoFile(`tquery/${mod}`);
+    if (content !== null) TQUERY_FILES[mod] = content;
   }
   return modules.filter(m => !TQUERY_FILES[m]);
 }
@@ -373,10 +386,8 @@ async function loadTquerySource() {
 const CODEBOOK_FILES = {};
 async function loadCodebooks() {
   for (const f of ["atc_groups.csv", "icd10_chapters.csv"]) {
-    try {
-      const resp = await fetch(`${GITHUB_RAW}tquery/codebooks/${f}`);
-      if (resp.ok) CODEBOOK_FILES[f] = await resp.text();
-    } catch(e) {}
+    const content = await fetchRepoFile(`tquery/codebooks/${f}`);
+    if (content !== null) CODEBOOK_FILES[f] = content;
   }
 }
 
@@ -1451,7 +1462,7 @@ initResize();
 
 // Load Pyodide from CDN
 const pyodideScript = document.createElement("script");
-pyodideScript.src = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js";
+pyodideScript.src = "https://cdn.jsdelivr.net/pyodide/v314.0.2/full/pyodide.js";
 pyodideScript.onload = initPyodide;
 pyodideScript.onerror = () => {
   document.getElementById("status").textContent = "Failed to load Pyodide";

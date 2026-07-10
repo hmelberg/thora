@@ -13,7 +13,7 @@
 
 .KEYWORDS <- c(
   "before", "after", "simultaneously",
-  "inside", "outside",
+  "inside", "outside", "between",
   "and", "or", "not", "never",
   "min", "max", "exactly",
   "of", "in", "to",
@@ -157,21 +157,28 @@ parse_query <- function(expr) {
 }
 
 .parse_temporal <- function(p) {
-  lhs_q <- .try_quantified(p)
+  lhs_q <- .try_quantified(p, wrap_any = TRUE)
   left <- if (!is.null(lhs_q)) lhs_q else .parse_not(p)
   if (.at_keyword(p, c("before", "after", "simultaneously"))) {
     op <- .advance(p)$value
-    rhs_q <- .try_quantified(p)
+    rhs_q <- .try_quantified(p, wrap_any = TRUE)
     right <- if (!is.null(rhs_q)) rhs_q else .parse_not(p)
     return(new_temporal_expr(op, left, right))
   }
   if (inherits(left, "Quantifier")) {
+    if (left$kind == "any") {
+      # Standalone `any X` == `X` (existential is the row default).
+      return(left$child)
+    }
     .error(p, sprintf("'%s' requires a temporal operator (before/after/simultaneously)", left$kind))
   }
   left
 }
 
-.try_quantified <- function(p) {
+# `any` carries meaning only on the sides of a temporal comparison
+# (`wrap_any = TRUE`); in window contexts it is elided as a no-op —
+# mirrors the Python parser exactly (AST parity).
+.try_quantified <- function(p, wrap_any = FALSE) {
   if (!.at_keyword(p, c("every", "any", "each", "always"))) return(NULL)
   kind_keyword <- .advance(p)$value
   is_any <- kind_keyword == "any"
@@ -188,11 +195,15 @@ parse_query <- function(expr) {
   }
 
   atom <- .parse_code_expr(p)
-  wrapped <- if (is_any) atom else new_quantifier("every", atom)
   if (.at_keyword(p, c("inside", "outside"))) {
-    return(.parse_within(p, child = wrapped))
+    child <- if (is_any) atom else new_quantifier("every", atom)
+    return(.parse_within(p, child = child))
   }
-  wrapped
+  if (is_any) {
+    if (wrap_any) return(new_quantifier("any", atom))
+    return(atom)
+  }
+  new_quantifier("every", atom)
 }
 
 .parse_not <- function(p) {
@@ -291,6 +302,15 @@ parse_query <- function(expr) {
 
 .parse_within <- function(p, child = NULL) {
   if (is.null(child)) child <- .parse_atom(p)
+  if (.at_keyword(p, "between")) {
+    # Sugar: `X between A and B` == `X inside A to B` (same BetweenExpr).
+    .advance(p)
+    bound_start <- .parse_prefix(p)
+    if (!.at_keyword(p, "and")) .error(p, "Expected 'and' in `between A and B`")
+    .advance(p)
+    bound_end <- .parse_prefix(p)
+    return(new_between_expr(child, bound_start, bound_end, outside = FALSE))
+  }
   if (!.at_keyword(p, c("inside", "outside"))) return(child)
 
   keyword <- .advance(p)$value
@@ -304,20 +324,31 @@ parse_query <- function(expr) {
   if (tok$type == "INT" || is_minus_int) {
     first <- .parse_signed_int(p)
     min_val <- 0L; max_val <- first
+    has_range <- FALSE
     if (.at_keyword(p, "to")) {
       .advance(p)
       min_val <- first
       max_val <- .parse_signed_int(p)
+      has_range <- TRUE
     }
-    return(.finish_numeric_inside(p, child, min_val, max_val, outside))
+    return(.finish_numeric_inside(p, child, min_val, max_val, outside, has_range))
   }
 
-  # EXPR form: positional span or positional bounds
+  # EXPR form: positional span or positional bounds (`to`-separated;
+  # mirrors the Python parser — the old `and` bounds form is a guided
+  # parse error to avoid ambiguity with logical `and`).
   bound_start <- .parse_prefix(p)
-  if (.at_keyword(p, "and")) {
+  if (.at_keyword(p, "to")) {
     .advance(p)
     bound_end <- .parse_prefix(p)
     return(new_between_expr(child, bound_start, bound_end, outside = outside))
+  }
+  if (.at_keyword(p, "and")) {
+    .error(p, paste0(
+      "`inside A and B` is ambiguous: write `inside A to B` (or ",
+      "`X between A and B`) for date bounds, or parenthesize ",
+      "`(X inside A) and B` for logical 'and'"
+    ))
   }
   new_within_span_expr(child, bound_start, outside = outside)
 }
@@ -332,7 +363,8 @@ parse_query <- function(expr) {
   if (negate) -v else v
 }
 
-.finish_numeric_inside <- function(p, child, min_val, max_val, outside) {
+.finish_numeric_inside <- function(p, child, min_val, max_val, outside,
+                                   has_range = FALSE) {
   unit_tok <- .peek(p)
   if (!(unit_tok$type == "KEYWORD" && unit_tok$value %in% c("days", "event", "events"))) {
     .error(p, sprintf("Expected 'days' or 'events', got %s", deparse(unit_tok$value)))
@@ -373,8 +405,15 @@ parse_query <- function(expr) {
     }
     .error(p, "Event window requires a direction (before/after/around) and a reference expression")
   }
-  if (min_val == 0L && max_val > 0L && direction != "around") {
-    min_events <- 1L; max_events <- max_val
+  # Bare-form shorthands (mirrors the Python parser): `inside N events
+  # after Y` means +1..+N; `inside N events around Y` means -N..+N.
+  # Explicit ranges (`M to N`) are always taken literally.
+  if (!has_range) {
+    if (direction == "around") {
+      min_events <- -max_val; max_events <- max_val
+    } else {
+      min_events <- 1L; max_events <- max_val
+    }
   } else {
     min_events <- min_val; max_events <- max_val
   }

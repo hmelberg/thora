@@ -58,7 +58,7 @@ class TokenType(Enum):
 
 KEYWORDS = frozenset({
     "before", "after", "simultaneously",
-    "inside", "outside",
+    "inside", "outside", "between",
     "and", "or", "not", "never",
     "min", "max", "exactly",
     "of", "in", "to",
@@ -187,8 +187,9 @@ class Parser:
         shift_suffix  ::= ('+' | '-') INT 'days'
         prefix_core   ::= prefix? inside_expr
         inside_expr   ::= atom (('inside'|'outside') inside_tail)?
+                        | atom 'between' EXPR 'and' EXPR
         inside_tail   ::= INT ('to' INT)? ('days'|'events') [dir ['of'] ref]
-                        | EXPR ('and' EXPR)?
+                        | EXPR ('to' EXPR)?
         prefix        ::= ('min'|'max'|'exactly') INT 'of'
                         | ORDINAL 'of'
                         | ('first'|'last') INT 'of'
@@ -264,32 +265,42 @@ class Parser:
         return left
 
     def _parse_temporal(self) -> ASTNode:
-        lhs_q = self._try_quantified()
+        lhs_q = self._try_quantified(wrap_any=True)
         left = lhs_q if lhs_q is not None else self._parse_not()
         if self._at_keyword("before", "after", "simultaneously"):
             op = self._advance().value
-            rhs_q = self._try_quantified()
+            rhs_q = self._try_quantified(wrap_any=True)
             right = rhs_q if rhs_q is not None else self._parse_not()
             return TemporalExpr(op, left, right)
         if isinstance(left, Quantifier):
+            if left.kind == "any":
+                # Standalone `any X` ≡ `X` (existential is the row default).
+                return left.child
             raise self._error(
                 f"'{left.kind}' requires a temporal operator (before/after/simultaneously)"
             )
         return left
 
-    def _try_quantified(self) -> ASTNode | None:
+    def _try_quantified(self, wrap_any: bool = False) -> ASTNode | None:
         """Try to parse a quantifier (`every`, `any`, `each`, `always`) followed by a code atom.
 
         `every`, `each`, and `always` are synonyms for universal
         quantification — `each` reads more naturally on a window's ref
-        side, `always` on the subject side. `any` is the existential
-        default and is elided as a no-op. All four are restricted to
+        side, `always` on the subject side. All four are restricted to
         bare code expressions (same restrictions as `every`).
 
+        `any` is existential. It only carries meaning on the sides of a
+        temporal comparison (`any X before any Y` — "some X before some
+        Y"), so it is wrapped as `Quantifier(kind="any")` only when
+        `wrap_any=True` (temporal-side calls). In window contexts —
+        which are already existential over their events — it is elided
+        as a documented no-op, so `Quantifier(kind="any")` never reaches
+        the window evaluators.
+
         Returns:
-            - `Quantifier(every, CodeAtom)` for `every/each/always X`
-            - A window expression if one follows
-            - `X` for `any X` (the `any` is elided as a no-op)
+            - `Quantifier(every|any, CodeAtom)` for a bare quantified atom
+            - A window expression if one follows (`any` elided inside it)
+            - `X` for `any X` when the `any` is a no-op
             - `None` if no quantifier keyword is present (caller falls back)
         """
         if not self._at_keyword("every", "any", "each", "always"):
@@ -314,11 +325,14 @@ class Parser:
                 f"'{kind_keyword}' cannot be combined with a count prefix"
             )
         atom = self._parse_code_expr()
-        wrapped = atom if is_any else Quantifier(kind="every", child=atom)
-        # If an inside/outside window follows, attach it to the quantified atom.
+        # If an inside/outside window follows, attach it to the quantified
+        # atom — `any` is a no-op there (windows are existential already).
         if self._at_keyword("inside", "outside"):
-            return self._parse_within(child=wrapped)
-        return wrapped
+            child = atom if is_any else Quantifier(kind="every", child=atom)
+            return self._parse_within(child=child)
+        if is_any:
+            return Quantifier(kind="any", child=atom) if wrap_any else atom
+        return Quantifier(kind="every", child=atom)
 
     def _parse_not(self) -> ASTNode:
         if self._at_keyword("not", "never"):
@@ -428,26 +442,36 @@ class Parser:
         return self._parse_within()
 
     def _parse_within(self, child: ASTNode | None = None) -> ASTNode:
-        """Parse `inside`/`outside` constructs attached to a child atom.
+        """Parse `inside`/`outside`/`between` constructs attached to a child atom.
 
         Grammar:
-            inside_expr ::= atom ('inside'|'outside') tail
-            tail        ::= INT ['to' INT] ('days'|'events') [dir ['of'] ref]
-                          | EXPR ['and' EXPR]
-            dir         ::= 'before' | 'after' | 'around'
+            inside_expr  ::= atom ('inside'|'outside') tail
+                           | atom 'between' EXPR 'and' EXPR
+            tail         ::= INT ['to' INT] ('days'|'events') [dir ['of'] ref]
+                           | EXPR ['to' EXPR]
+            dir          ::= 'before' | 'after' | 'around'
 
         Notes:
             - `inside N days [dir [Y]]` — time window, direction and ref
               both optional.
             - `inside N events dir Y` — event window, direction and ref
               required.
-            - `inside EXPR` — positional span. `inside EXPR and EXPR` —
-              positional bounds.
+            - `inside EXPR` — positional span. `inside EXPR to EXPR` —
+              positional bounds; `between EXPR and EXPR` is sugar for the
+              same thing. The historical `inside EXPR and EXPR` bounds
+              form is a guided parse error — `and` after a span would
+              otherwise be ambiguous with logical conjunction.
             - `outside …` gives the row-level complement (restricted to
               evaluable persons) for each of the above.
         """
         if child is None:
             child = self._parse_atom()
+        if self._at_keyword("between"):
+            self._advance()
+            bound_start = self._parse_prefix()
+            self._expect_keyword("and")
+            bound_end = self._parse_prefix()
+            return BetweenExpr(child, bound_start, bound_end, outside=False)
         if not self._at_keyword("inside", "outside"):
             return child
 
@@ -466,20 +490,31 @@ class Parser:
             first = self._parse_signed_int()
             min_val = 0
             max_val = first
+            has_range = False
             if self._at_keyword("to"):
                 self._advance()
                 min_val = first
                 max_val = self._parse_signed_int()
+                has_range = True
             return self._finish_numeric_inside(
-                child, min_val, max_val, outside
+                child, min_val, max_val, outside, has_range
             )
 
         # EXPR form: positional span or positional bounds
         bound_start = self._parse_prefix()
-        if self._at_keyword("and"):
+        if self._at_keyword("to"):
             self._advance()
             bound_end = self._parse_prefix()
             return BetweenExpr(child, bound_start, bound_end, outside=outside)
+        if self._at_keyword("and"):
+            # The historical bounds form — ambiguous with logical `and`
+            # (`X inside last 5 events and K52` reads as conjunction).
+            # Refuse it with guidance rather than silently picking one.
+            raise self._error(
+                "`inside A and B` is ambiguous: write `inside A to B` (or "
+                "`X between A and B`) for date bounds, or parenthesize "
+                "`(X inside A) and B` for logical 'and'"
+            )
         return WithinSpanExpr(child, bound_start, outside=outside)
 
     def _parse_signed_int(self) -> int:
@@ -501,8 +536,14 @@ class Parser:
         min_val: int,
         max_val: int,
         outside: bool,
+        has_range: bool = False,
     ) -> ASTNode:
-        """Finish parsing the unit + direction tail of a numeric inside/outside."""
+        """Finish parsing the unit + direction tail of a numeric inside/outside.
+
+        `has_range` distinguishes the explicit range form (`M to N`) from
+        the bare form (`N`): only the bare event form gets a shorthand
+        rewrite; explicit ranges are taken literally.
+        """
         unit_tok = self._peek()
         if unit_tok.type != TokenType.KEYWORD or unit_tok.value not in (
             "days", "event", "events",
@@ -561,12 +602,18 @@ class Parser:
                 "Event window requires a direction (before/after/around) "
                 "and a reference expression"
             )
-        # Shorthand `inside N events after Y` means positions +1..+N
-        # (Y itself is excluded). With an explicit range, both bounds are
-        # taken literally, including sign for `around`.
-        if min_val == 0 and max_val > 0 and direction != "around":
-            min_events = 1
-            max_events = max_val
+        # Bare-form shorthands: `inside N events after Y` means positions
+        # +1..+N, and `inside N events around Y` means the symmetric
+        # window −N..+N (mirroring `inside N days around Y`). Explicit
+        # ranges (`M to N`) are ALWAYS taken literally, including sign
+        # for `around` — `inside 0 to 5 events after Y` keeps its 0.
+        if not has_range:
+            if direction == "around":
+                min_events = -max_val
+                max_events = max_val
+            else:
+                min_events = 1
+                max_events = max_val
         else:
             min_events = min_val
             max_events = max_val

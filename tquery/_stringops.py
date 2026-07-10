@@ -6,7 +6,7 @@ Pure string operations on pandas Series — no DataFrame/code logic.
 from __future__ import annotations
 
 import re
-from itertools import zip_longest
+from itertools import groupby, zip_longest
 
 import pandas as pd
 
@@ -125,8 +125,14 @@ def del_repeats(s: pd.Series) -> pd.Series:
     """Remove consecutively repeated characters from each string.
 
     'aaabbc' → 'abc', 'iiiai' → 'iai'
+
+    Uses `itertools.groupby` instead of a `(.)\\1+` regex: pandas 3's
+    Arrow-backed strings run `str.replace` through RE2, which rejects
+    backreferences.
     """
-    return s.str.replace(r"(.)\1+", r"\1", regex=True)
+    return s.apply(
+        lambda x: "".join(ch for ch, _ in groupby(x)) if isinstance(x, str) else x
+    )
 
 
 def del_singles(s: pd.Series) -> pd.Series:

@@ -12,6 +12,8 @@ from typing import Any
 
 import pandas as pd
 
+from tquery._codes import is_code_column
+
 
 _DEFAULT_DIR = Path(__file__).parent / "codebooks"
 
@@ -235,7 +237,7 @@ def count_codes(
     """
     if cols is None:
         cols = [c for c in df.columns
-                if c not in (pid, date) and pd.api.types.is_string_dtype(df[c])]
+                if c not in (pid, date) and is_code_column(df[c])]
     elif isinstance(cols, str):
         cols = [cols]
 

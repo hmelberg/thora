@@ -189,9 +189,21 @@ For mixed pandas+polars inputs to the polars backend, individual pandas DataFram
 
 | Expression | Meaning |
 |-----------|---------|
-| `K50 before K51` | K50 occurs before K51 (for the same person) |
-| `K50 after K51` | K50 occurs after K51 |
+| `K50 before K51` | The person's **first** K50 is before their **first** K51 |
+| `K50 after K51` | The person's **first** K50 is after their **first** K51 |
 | `K50 simultaneously K51` | K50 and K51 on the same date |
+
+The default reads each side as the person's *first* event — the standard incidence framing ("disease onset before treatment start"). It is **not** existential: a person with K51 (2010) → K50 (2012) → K51 (2015) does *not* match `K50 before K51`, because their first K50 comes after their first K51. Write it explicitly as `1st K50 before 1st K51` if you prefer.
+
+For the existential reading — "*some* K50 before *some* K51" — quantify with `any`:
+
+| Expression | Meaning |
+|-----------|---------|
+| `any K50 before any K51` | Some K50 precedes some K51 (matches the person above) |
+| `K50 before any K51` | The first K50 precedes some K51 (equivalent) |
+| `any K51 after any K50` | Some K51 follows some K50 |
+
+(`any` on the other side — `any K50 before K51` — coincides with the default, since "some K50 before the *first* K51" is the same as "the first K50 before the first K51". Inside time/event windows `any` is a harmless no-op: windows are already existential over their events.)
 
 #### Time Windows
 
@@ -205,20 +217,33 @@ For mixed pandas+polars inputs to the polars backend, individual pandas DataFram
 | `K50 inside -5 to 20 days around K51` | Asymmetric window: 5 days before to 20 days after K51 |
 | `K50 outside 30 days after K51` | Row-level complement of the positive form |
 | `K50 outside 5 to 30 days after K51` | Row-level complement of the range form |
+| `X inside 0 to 5 days after X` | *Another* X within 0–5 days after an X (see below) |
 
 Negative offsets are only valid with `around`; `inside -5 days after K51` is a syntax error. Range bounds must be ascending.
+
+Two rules worth knowing:
+
+- **All reference events count.** A child event matches when *any* reference event falls in the window — a nearer reference that fails the lower bound of a range window does not shadow a farther one that qualifies.
+- **An event is never its own reference.** When the subject and reference patterns overlap (`X inside 5 days after X`), the row itself does not anchor its own window — but a *different* event on the same date does. So `X inside 5 days after X` asks "did the person get another X within 5 days of an X?": a lone X does not match, two X events on the same day both do. (Anchored aggregate windows are the exception: in `sum(dose) > 300 inside 90 days after B01`, the anchor B01 row's own dose is part of its window.)
 
 #### Event Windows
 
 | Expression | Meaning |
 |-----------|---------|
-| `K50 inside 5 events after K51` | K50 within the next 5 events after K51 |
-| `K50 inside 3 to 5 events after K51` | K50 falling 3–5 events after K51 (range form) |
+| `K50 inside 5 events after K51` | K50 within the next 5 events after K51 (positions +1..+5) |
+| `K50 inside 3 to 5 events after K51` | K50 falling 3–5 events after K51 (range form, literal) |
+| `K50 inside 3 events around K51` | K50 within 3 events in either direction (symmetric −3..+3) |
+| `K50 inside -3 to 5 events around K51` | Asymmetric position window (signed, literal) |
 | `K50 outside 10 events before K51` | Row-level complement: K50 not in the 10 events before K51 |
 | `K50 inside last 5 events` | K50 falling within the last 5 rows of the person's timeline |
 | `K50 outside last 5 events` | Row-level complement of the positional span |
-| `K50 inside 1st K51 and 5th K51` | K50 between the first and fifth K51 events |
-| `K50 outside 1st K51 and 5th K51` | Row-level complement of the positional span |
+| `K50 inside 1st K51 to 5th K51` | K50 between the first and fifth K51 events |
+| `K50 between 1st K51 and 5th K51` | Same — `between A and B` is sugar for `inside A to B` |
+| `K50 outside 1st K51 to 5th K51` | Row-level complement of the positional span |
+
+Note the bounds separator is `to` (matching `inside 30 to 90 days`), never `and` — after a span, `and` always means logical conjunction, so `K50 inside last 5 events and K52` would be ambiguous and is a parse error pointing to both spellings: use `inside A to B` / `between A and B` for date bounds, or `(K50 inside last 5 events) and K52` for the conjunction.
+
+The same rules as for time windows apply: **an event is never its own reference** (positions are unique, so offset 0 *is* the anchor row — `X inside -3 to 5 events around X` requires *another* X within those positions), and explicit ranges are taken literally while the bare forms carry shorthands (`inside 5 events after` = +1..+5; `inside 3 events around` = −3..+3). For anchored **aggregates** the anchor row stays inside its own window, so `sum(dose) > 300 inside 0 to 5 events after B01` counts the anchor B01's own dose while the bare `inside 5 events after B01` does not.
 
 #### The `event` / `events` Atom
 
@@ -239,10 +264,14 @@ Negative offsets are only valid with `around`; `inside -5 days after K51` is a s
 | Expression | Meaning |
 |-----------|---------|
 | `min 2 of K50` | Persons with at least 2 K50 events |
-| `max 3 of K50` | Persons with at most 3 K50 events |
+| `max 3 of K50` | Persons with 1–3 K50 events (**requires at least one** — see below) |
 | `exactly 1 of K50` | Persons with exactly 1 K50 event |
 | `2-5 of K50` | Persons with 2 to 5 K50 events |
 | `2-5 K50` | Same (the 'of' is optional) |
+| `0-2 of K50` | Persons with at most 2 K50 events, **including none** |
+| `exactly 0 of K50` | Persons with no K50 (≡ `not K50`) |
+
+**The explicit-0 rule.** Count predicates include persons with *zero* matches exactly when you write a literal `0`: `0-2 of K50` reads "at most 2, possibly none", and `exactly 0 of K50` / `max 0 of K50` equal `not K50`. Without a written 0, counts require at least one match — `max 3 of K50` means "has K50, at most 3", and its result rows are precisely the K50 rows. Zero-count persons have no K50 rows, so 0-forms mark them on their full timeline (like `not`); prefer the 0-forms as person-level filters (`0-2 of K50 and K51`) rather than as sides of `before`/`after`.
 
 #### Positional Selection
 
@@ -308,11 +337,14 @@ Aggregates compute a scalar per person over a numeric column, then threshold it.
 | `fall(BP) > 10%` | **v0.2.3** — BP fell by more than 10% relative to a prior measurement |
 | `range(BP) > 10%` | **v0.2.4** — BP max is more than 10% higher than BP min — `(max − min) / min` |
 | `sum(painkillers) > 300 inside 90 days after I21` | Sum over rows within 90 days after a heart attack |
+| `sum(painkillers) > 300 inside 90 days after every I21` | **v0.2.5** — After EVERY heart attack, the following 90-day sum exceeds 300 |
 | `sum(painkillers) > 300 inside 90 days` | **Sliding** — any 90-day stretch where the rolling sum exceeds 300 |
 | `range(BP) > 20 inside 5 events` | Sliding 5-event window — any 5 consecutive measurements with range > 20 |
 | `rise(BP) > 20 inside 7 days` | Any 7-day stretch where BP rose by more than 20 |
 
 `min(IDENT)` / `max(IDENT)` (with parentheses) are **value aggregates** — distinct from `min N of K50` / `max N of K50` (count predicates). The parser disambiguates by the `(`.
+
+**Universal refs** (v0.2.5): `... after every Y` evaluates the aggregate once per reference event, over that event's own window, and requires every window to pass. Persons without any ref never match. Empty windows follow the standard defaults: `sum`/`count` are 0 (so `sum(dose) >= 0 after every K51` tolerates an empty window), all other aggregates are NA and fail (so `mean(dose) < 99999 after every K51` fails for a person with an empty window). Not available with `outside` or event windows.
 
 ---
 
@@ -435,8 +467,8 @@ A reference selector can be shifted by a number of days, which is the cleanest w
 # Inside a window — the right bound is shifted
 'K50 inside 60 days before -1st K51 - 14 days'
 
-# As either bound of a positional `inside ... and ...` span
-'K50 inside 1st K51 + 7 days and 5th K51 - 7 days'
+# As either bound of a positional `inside ... to ...` span
+'K50 inside 1st K51 + 7 days to 5th K51 - 7 days'
 ```
 
 **Restrictions.**
@@ -445,7 +477,7 @@ A reference selector can be shifted by a number of days, which is the cleanest w
 - Shifted dates are valid only as the **reference** in:
   - the RHS of `before` / `after` / `simultaneously`
   - the ref of an `inside N days direction REF` window
-  - either bound of `inside EXPR and EXPR`
+  - either bound of `inside EXPR to EXPR`
 - They are **not** valid as the LHS of a temporal comparison, in event-count windows (`inside N events after …`), as the ref of a positional span without bounds, as a logical operand, or as the child of a prefix.
 - Only the unit `days` is supported (no `weeks`/`months`/`years`).
 
@@ -458,7 +490,7 @@ For every positive `inside …` form, `outside …` gives the row-level compleme
 'K50 outside 5 to 30 days after K51'
 'K50 outside 3 events after K51'
 'K50 outside last 5 events'
-'K50 outside 1st K51 and 5th K51'
+'K50 outside 1st K51 to 5th K51'
 ```
 
 `outside` participates in the same precedence slot as `inside` and obeys the same parenthesisation rules.

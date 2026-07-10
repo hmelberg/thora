@@ -35,10 +35,17 @@ from tquery._codes import (
     collect_unique_codes,
     expand_all_codes,
     get_matching_rows,
+    is_code_column,
     resolve_columns,
 )
 from tquery._prefix import eval_prefix, eval_range_prefix
-from tquery._temporal import eval_before_after, eval_inside_outside, eval_within_days
+from tquery._temporal import (
+    eval_before_after,
+    eval_inside_outside,
+    eval_within_days,
+    per_ref_window_agg_pass,
+    window_bands,
+)
 from tquery._types import TQueryColumnError
 
 
@@ -185,12 +192,11 @@ class Evaluator:
 
         # Resolve default columns for code matching
         if cols is None:
-            # Auto-detect: all string-like columns except pid and date.
-            # `is_string_dtype` covers pandas 2.x ('object'), pandas 3.x
-            # ('str' / Arrow-backed), and Categorical with string values.
+            # Auto-detect: all string-like columns except pid and date
+            # (NaN-tolerant — see `is_code_column`).
             self._default_cols = [
                 c for c in df.columns
-                if c not in (pid, date) and pd.api.types.is_string_dtype(df[c])
+                if c not in (pid, date) and is_code_column(df[c])
             ]
         elif isinstance(cols, str):
             self._default_cols = [cols]
@@ -331,18 +337,21 @@ class Evaluator:
 
     def _eval_temporal(self, node: TemporalExpr) -> pd.Series:
         left_inner, every_left = _unwrap_quantifier(node.left)
+        any_left = isinstance(node.left, Quantifier) and node.left.kind == "any"
         if isinstance(left_inner, ShiftExpr):
             raise TypeError(
                 "Shifted anchor dates are only valid on the reference side "
                 "of `before`/`after`/`simultaneously`"
             )
         right_inner, every_right = _unwrap_quantifier(node.right)
+        any_right = isinstance(node.right, Quantifier) and node.right.kind == "any"
         right_node, right_offset = _unwrap_shift(right_inner)
         left_mask = self.evaluate(left_inner)
         right_mask = self.evaluate(right_node)
         return eval_before_after(
             self.df, left_mask, right_mask, node.op, self.pid, self.date,
             every_left=every_left, every_right=every_right,
+            any_left=any_left, any_right=any_right,
             right_offset_days=right_offset,
         )
 
@@ -426,9 +435,17 @@ class Evaluator:
         self,
         node: AggregateExpr,
         row_mask: pd.Series | None = None,
+        evaluable_pids: set | None = None,
     ) -> pd.Series:
         """Standalone or row-masked aggregate. Returns a row-level mask
-        (every row of a matching person True)."""
+        (every row of a matching person True).
+
+        `evaluable_pids` (anchored windows): persons that must get an
+        aggregate value even when NO rows fall inside the window — the
+        empty set follows the spec defaults (sum/count → 0, everything
+        else → NA, which fails the comparison). Without it, a person
+        whose window is empty would silently drop out of the groupby.
+        """
         if node.column not in self.df.columns:
             raise TQueryColumnError(
                 f"Column '{node.column}' not found in DataFrame"
@@ -446,6 +463,13 @@ class Evaluator:
             col.groupby(sub_pid), node.func,
             relative=getattr(node, "relative", False),
         )
+
+        if evaluable_pids is not None:
+            agg = agg.reindex(pd.Index(list(evaluable_pids)))
+            if node.func in ("sum", "count", "n"):
+                # astype first: fillna on an object-dtype aggregate (an
+                # all-NA object column) would trigger silent downcasting.
+                agg = agg.astype("float64").fillna(0.0)
 
         op_func = _OPS[node.op]
         matching = op_func(agg, node.value)
@@ -469,23 +493,63 @@ class Evaluator:
         # Anchored: aggregate over rows whose date falls in the window of
         # any ref event. We construct the window row-mask by passing an
         # all-True child mask through eval_within_days.
-        ref_inner, _every_right = _unwrap_quantifier(node.ref)
+        ref_inner, every_right = _unwrap_quantifier(node.ref)
         ref_node, ref_offset = _unwrap_shift(ref_inner)
         ref_mask = self.evaluate(ref_node)
+        if every_right:
+            # Universal ref: EVERY ref event's own window-aggregate must
+            # pass the threshold (per-ref semantics, see spec).
+            if node.outside:
+                raise TypeError(
+                    "`outside ... every REF` has no defined semantics for "
+                    "anchored aggregates"
+                )
+            return self._eval_aggregate_per_ref(agg_node, node, ref_mask, ref_offset)
         all_rows = pd.Series(True, index=self.df.index)
+        # exclude_self=False: an anchor row stays inside its own window —
+        # `sum(dose) inside 90 days after B01` includes the index B01's dose.
         in_window = eval_within_days(
             self.df, all_rows, ref_mask, node.days, node.direction,
             self.pid, self.date, min_days=node.min_days,
-            ref_offset_days=ref_offset,
+            ref_offset_days=ref_offset, exclude_self=False,
         )
+        evaluable_pids = set(self.df[self.pid][ref_mask].unique())
         if node.outside:
             # Aggregate over rows OUTSIDE the window, restricted to
             # persons who have at least one ref event (evaluable).
-            evaluable_pids = set(self.df[self.pid][ref_mask].unique())
             evaluable_rows = self.df[self.pid].isin(evaluable_pids)
             out_window = evaluable_rows & ~in_window
-            return self._eval_aggregate(agg_node, row_mask=out_window)
-        return self._eval_aggregate(agg_node, row_mask=in_window)
+            return self._eval_aggregate(
+                agg_node, row_mask=out_window, evaluable_pids=evaluable_pids,
+            )
+        return self._eval_aggregate(
+            agg_node, row_mask=in_window, evaluable_pids=evaluable_pids,
+        )
+
+    def _eval_aggregate_per_ref(
+        self,
+        agg_node: AggregateExpr,
+        node: WithinExpr,
+        ref_mask: pd.Series,
+        ref_offset: int,
+    ) -> pd.Series:
+        """`AGG(col) OP x inside ... DIRECTION every REF` — for each ref
+        event, aggregate the column over that ref's own day-window; the
+        person matches iff every ref passes (and has >= 1 ref)."""
+        if agg_node.column not in self.df.columns:
+            raise TQueryColumnError(
+                f"Column '{agg_node.column}' not found in DataFrame"
+            )
+        pid_codes, _ = pd.factorize(self.df[self.pid], use_na_sentinel=False)
+        day = self.df[self.date].to_numpy().astype("datetime64[D]").astype(np.int64)
+        values = self.df[agg_node.column].to_numpy(dtype="float64", na_value=np.nan)
+        bands = window_bands(node.direction, node.min_days, node.days)
+        passed = per_ref_window_agg_pass(
+            pid_codes, day, values, ref_mask.to_numpy(), bands, ref_offset,
+            agg_node.func, _OPS[agg_node.op], agg_node.value,
+            relative=getattr(agg_node, "relative", False),
+        )
+        return pd.Series(passed, index=self.df.index)
 
     def _eval_aggregate_sliding(
         self, node: AggregateExpr, days: int,
@@ -561,17 +625,28 @@ class Evaluator:
 
         # Anchored: build a row mask of rows whose event-position is in
         # the window of any ref event, then aggregate.
+        if isinstance(node.ref, Quantifier):
+            raise TypeError(
+                "Universal refs (`every REF`) are not supported for "
+                "event-window aggregates; use a day-window "
+                "(`inside N days after every REF`) instead"
+            )
         ref_mask = self.evaluate(node.ref)
         all_rows = pd.Series(True, index=self.df.index)
+        # exclude_self=False: the anchor row stays inside its own window
+        # (same convention as anchored day-window aggregates).
         in_window = eval_inside_outside(
             self.df, all_rows, ref_mask, True,
             node.min_events, node.max_events, node.direction, self.pid,
+            exclude_self=False,
         )
+        evaluable_pids = set(self.df[self.pid][ref_mask].unique())
         if not node.inside:
-            evaluable_pids = set(self.df[self.pid][ref_mask].unique())
             evaluable_rows = self.df[self.pid].isin(evaluable_pids)
             in_window = evaluable_rows & ~in_window
-        return self._eval_aggregate(agg_node, row_mask=in_window)
+        return self._eval_aggregate(
+            agg_node, row_mask=in_window, evaluable_pids=evaluable_pids,
+        )
 
     def _eval_aggregate_sliding_events(
         self, node: AggregateExpr, window_size: int,

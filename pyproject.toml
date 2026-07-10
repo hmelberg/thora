@@ -7,8 +7,10 @@ name = "tquery"
 version = "0.1.0"
 description = "Temporal query language for event-level health data in pandas"
 requires-python = ">=3.10"
+# pandas 3.x is the primary supported version (the test suite and the
+# Pyodide playground run on it); pandas 2.x remains supported and tested.
 dependencies = [
-    "pandas>=1.5",
+    "pandas>=2.0",
     "numpy>=1.22",
 ]
 

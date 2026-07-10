@@ -168,14 +168,34 @@ class DuckDBCompiler:
 
     def _aggregate_with_filter(
         self, node: AggregateExpr, row_filter_sql: str | None,
+        evaluable_sql: str | None = None,
     ) -> str:
-        """Compute per-pid aggregate, threshold, return rows of matching pids."""
-        col = node.column
+        """Compute per-pid aggregate, threshold, return rows of matching pids.
+
+        SUM/COUNT compare via COALESCE(_agg, 0): SQL's SUM over an all-NULL
+        (or empty) group is NULL, but the spec defines the empty-set sum as
+        0. `evaluable_sql` (anchored windows) supplies the persons that
+        must be scored even when NO rows fall in the window — they enter
+        via LEFT JOIN and get the empty-set defaults (sum/count → 0,
+        everything else NULL → fail).
+        """
         per_pid_sql = self._per_pid_agg_sql(node, row_filter_sql)
+        if node.func in ("sum", "count", "n"):
+            ok = f"COALESCE(_a._agg, 0) {node.op} {node.value}"
+        else:
+            ok = f"_a._agg IS NOT NULL AND _a._agg {node.op} {node.value}"
+        if evaluable_sql is None:
+            return (
+                f"SELECT * FROM {self.events} "
+                f"WHERE {self.pid} IN (SELECT _a.{self.pid} FROM ({per_pid_sql}) _a "
+                f"WHERE {ok})"
+            )
         return (
-            f"SELECT * FROM {self.events} "
-            f"WHERE {self.pid} IN (SELECT {self.pid} FROM ({per_pid_sql}) _a "
-            f"WHERE _agg IS NOT NULL AND _agg {node.op} {node.value})"
+            f"SELECT * FROM {self.events} WHERE {self.pid} IN ("
+            f"SELECT _ev.{self.pid} FROM "
+            f"(SELECT DISTINCT {self.pid} FROM ({evaluable_sql}) _e0) _ev "
+            f"LEFT JOIN ({per_pid_sql}) _a USING ({self.pid}) "
+            f"WHERE {ok})"
         )
 
     def _per_pid_agg_sql(
@@ -251,17 +271,30 @@ class DuckDBCompiler:
 
     # ---- prefix --------
 
+    def _zero_count_rows_sql(self, child_sql: str) -> str:
+        """All rows of persons with ZERO child-matching rows (the
+        explicit-0 convention: marked on their full timeline)."""
+        return (
+            f"SELECT * FROM {self.events} WHERE {self.pid} NOT IN "
+            f"(SELECT DISTINCT {self.pid} FROM ({child_sql}) _z)"
+        )
+
     def _prefix(self, node: PrefixExpr) -> str:
         child_sql = self.compile(node.child)
         kind = node.kind; n = node.n
         if kind in ("min", "max", "exactly"):
             op = {"min": ">=", "max": "<=", "exactly": "="}[kind]
-            return (
+            rows = (
                 f"SELECT * FROM ({child_sql}) _c "
                 f"WHERE {self.pid} IN ("
                 f"SELECT {self.pid} FROM ({child_sql}) _c2 "
                 f"GROUP BY {self.pid} HAVING COUNT(*) {op} {n})"
             )
+            if n == 0:
+                # Explicit-0 rule: zero-count persons included on their
+                # full timeline (`exactly 0 of X` ≡ `not X`).
+                rows = f"{rows} UNION ALL {self._zero_count_rows_sql(child_sql)}"
+            return rows
         # ordinal / first / last — use row_number within each pid.
         if kind == "first":
             return (
@@ -292,13 +325,17 @@ class DuckDBCompiler:
 
     def _range_prefix(self, node: RangePrefixExpr) -> str:
         child_sql = self.compile(node.child)
-        return (
+        rows = (
             f"SELECT * FROM ({child_sql}) _c "
             f"WHERE {self.pid} IN ("
             f"SELECT {self.pid} FROM ({child_sql}) _c2 "
             f"GROUP BY {self.pid} "
             f"HAVING COUNT(*) BETWEEN {node.min_n} AND {node.max_n})"
         )
+        if node.min_n == 0:
+            # Explicit-0 rule: `0-N of X` includes zero-count persons.
+            rows = f"{rows} UNION ALL {self._zero_count_rows_sql(child_sql)}"
+        return rows
 
     # ---- logical / not --------
 
@@ -329,6 +366,8 @@ class DuckDBCompiler:
     # ---- temporal --------
 
     def _temporal(self, node: TemporalExpr) -> str:
+        any_left = isinstance(node.left, Quantifier) and node.left.kind == "any"
+        any_right = isinstance(node.right, Quantifier) and node.right.kind == "any"
         left_inner, every_left = _unwrap_quantifier(node.left)
         if isinstance(left_inner, ShiftExpr):
             raise TypeError("Shifted anchors only valid on RHS of temporal ops")
@@ -391,6 +430,11 @@ class DuckDBCompiler:
                 pred = "l_max < r_min"
             elif every_left:
                 pred = "l_max < r_max"
+            elif every_right:
+                pred = "l_min < r_min"
+            elif any_right:
+                # existential: some left before some right
+                pred = "l_min < r_max"
             else:
                 pred = "l_min < r_min"
         else:
@@ -398,6 +442,11 @@ class DuckDBCompiler:
                 pred = "l_min > r_max"
             elif every_right:
                 pred = "l_max > r_max"
+            elif every_left:
+                pred = "l_min > r_min"
+            elif any_left:
+                # existential: some left after some right
+                pred = "l_max > r_min"
             else:
                 pred = "l_min > r_min"
         matching = (
@@ -466,40 +515,50 @@ class DuckDBCompiler:
     def _rows_in_window_sql(
         self, child_sql: str, ref_sql: str,
         days: int, min_days: int, direction: str | None, ref_offset_days: int,
+        exclude_self: bool = True,
+        from_ref_side: bool = False,
     ) -> str:
         """Child rows that have at least one ref within [min_days, days]
-        (signed if direction='around' + min_days<0)."""
+        (signed if direction='around' + min_days<0).
+
+        `exclude_self` (default): a row never serves as its own reference
+        — only relevant when the child and ref patterns overlap
+        (`X inside 5 days after X`). Anchored aggregates pass False so
+        an anchor row stays inside its own window.
+
+        `from_ref_side=True` evaluates the mirrored predicate for the
+        `every_right` universal mode: `child_sql` then holds the ref rows
+        (query side, ref-offset applied there) and `ref_sql` the child
+        rows, while the window arithmetic keeps its child−ref meaning.
+        """
         signed_around = direction == "around" and min_days < 0
-        ref_date_expr = (
-            f"_r.{self.date} + INTERVAL '{ref_offset_days}' DAY"
-            if ref_offset_days else f"_r.{self.date}"
-        )
-        # Build the date-difference predicate.
-        if signed_around:
-            # signed delta = child - ref, must be in [min_days, days]
-            pred = (
-                f"DATE_DIFF('day', {ref_date_expr}, _c.{self.date}) "
-                f"BETWEEN {min_days} AND {days}"
+        if from_ref_side:
+            # Query rows are the refs (offset applies to them), targets
+            # are the child rows. `delta` below stays child − shifted ref.
+            child_expr = f"_r.{self.date}"
+            ref_expr = (
+                f"_c.{self.date} + INTERVAL '{ref_offset_days}' DAY"
+                if ref_offset_days else f"_c.{self.date}"
             )
-        elif direction == "after":
-            pred = (
-                f"DATE_DIFF('day', {ref_date_expr}, _c.{self.date}) "
-                f"BETWEEN {min_days} AND {days}"
+        else:
+            child_expr = f"_c.{self.date}"
+            ref_expr = (
+                f"_r.{self.date} + INTERVAL '{ref_offset_days}' DAY"
+                if ref_offset_days else f"_r.{self.date}"
             )
+        delta = f"DATE_DIFF('day', {ref_expr}, {child_expr})"
+        # Build the date-difference predicate on delta = child − ref.
+        if signed_around or direction == "after":
+            pred = f"{delta} BETWEEN {min_days} AND {days}"
         elif direction == "before":
-            pred = (
-                f"DATE_DIFF('day', _c.{self.date}, {ref_date_expr}) "
-                f"BETWEEN {min_days} AND {days}"
-            )
-        else:  # around / None
-            pred = (
-                f"ABS(DATE_DIFF('day', _c.{self.date}, {ref_date_expr})) "
-                f"BETWEEN {min_days} AND {days}"
-            )
+            pred = f"-({delta}) BETWEEN {min_days} AND {days}"
+        else:  # around (unsigned) / None
+            pred = f"ABS({delta}) BETWEEN {min_days} AND {days}"
+        self_pred = " AND _c.__rid__ <> _r.__rid__" if exclude_self else ""
         return (
             f"SELECT DISTINCT _c.* FROM ({child_sql}) _c "
             f"JOIN ({ref_sql}) _r ON _c.{self.pid} = _r.{self.pid} "
-            f"WHERE {pred}"
+            f"WHERE {pred}{self_pred}"
         )
 
     def _universal_pids_sql(
@@ -522,13 +581,9 @@ class DuckDBCompiler:
                 f"WHERE _w.{self.pid} = _ct.{self.pid})"
             )
         if every_right:
-            opposite = (
-                "before" if direction == "after"
-                else "after" if direction == "before"
-                else direction
-            )
             rhs_in_window = self._rows_in_window_sql(
-                ref_sql, child_sql, days, min_days, opposite, -ref_offset_days,
+                ref_sql, child_sql, days, min_days, direction, ref_offset_days,
+                from_ref_side=True,
             )
             clauses.append(
                 f"SELECT {self.pid} FROM (SELECT {self.pid}, COUNT(*) AS _t "
@@ -547,13 +602,23 @@ class DuckDBCompiler:
             return self._sliding_days_aggregate_sql(agg_node, node.days)
         # Anchored: build a row-mask of rows in the window of any ref,
         # then aggregate.
-        ref_inner, _ = _unwrap_quantifier(node.ref)
+        ref_inner, every_right = _unwrap_quantifier(node.ref)
         ref_inner, ref_offset = _unwrap_shift(ref_inner)
         ref_sql = self.compile(ref_inner)
+        if every_right:
+            if node.outside:
+                raise TypeError(
+                    "`outside ... every REF` has no defined semantics for "
+                    "anchored aggregates"
+                )
+            return self._per_ref_within_aggregate_sql(
+                agg_node, node, ref_sql, ref_offset,
+            )
         all_rows = f"SELECT * FROM {self.events}"
+        # exclude_self=False: an anchor row stays inside its own window.
         in_window = self._rows_in_window_sql(
             all_rows, ref_sql, node.days, node.min_days,
-            node.direction, ref_offset,
+            node.direction, ref_offset, exclude_self=False,
         )
         if node.outside:
             evaluable = f"SELECT DISTINCT {self.pid} FROM ({ref_sql}) _r"
@@ -562,7 +627,94 @@ class DuckDBCompiler:
                 f"WHERE _e.{self.pid} IN ({evaluable}) "
                 f"AND _e.__rid__ NOT IN (SELECT _w.__rid__ FROM ({in_window}) _w)"
             )
-        return self._aggregate_with_filter(agg_node, row_filter_sql=in_window)
+        return self._aggregate_with_filter(
+            agg_node, row_filter_sql=in_window, evaluable_sql=ref_sql,
+        )
+
+    def _per_ref_within_aggregate_sql(
+        self, agg_node: AggregateExpr, node: "WithinExpr",
+        ref_sql: str, ref_offset_days: int,
+    ) -> str:
+        """`AGG(col) OP x inside ... DIRECTION every REF` — per-ref window
+        aggregates. Every ref row's own day-window aggregate must pass;
+        persons without refs are excluded (no vacuous truth). LEFT JOIN
+        keeps empty windows: SUM/COUNT default to 0, other aggregates
+        stay NULL and fail via COALESCE(..., FALSE)."""
+        col = agg_node.column
+        days, min_days = node.days, node.min_days
+        direction = node.direction
+        signed_around = direction == "around" and min_days < 0
+        ref_expr = (
+            f"_r.{self.date} + INTERVAL '{ref_offset_days}' DAY"
+            if ref_offset_days else f"_r.{self.date}"
+        )
+        delta = f"DATE_DIFF('day', {ref_expr}, _e.{self.date})"
+        if signed_around or direction == "after":
+            pred = f"{delta} BETWEEN {min_days} AND {days}"
+        elif direction == "before":
+            pred = f"-({delta}) BETWEEN {min_days} AND {days}"
+        else:  # around (unsigned)
+            pred = f"ABS({delta}) BETWEEN {min_days} AND {days}"
+
+        win = (
+            f"SELECT _r.__rid__ AS _ref_rid, _r.{self.pid} AS {self.pid}, "
+            f"_e.{col} AS _v, _e.{self.date} AS _d, _e.__rid__ AS _erid "
+            f"FROM ({ref_sql}) _r LEFT JOIN {self.events} _e "
+            f"ON _e.{self.pid} = _r.{self.pid} AND {pred}"
+        )
+
+        relative = getattr(agg_node, "relative", False)
+        if agg_node.func == "range":
+            mn = "MIN(_v)"
+            spread = f"(MAX(_v) - {mn})"
+            agg_expr = (
+                f"({spread} / NULLIF(CASE WHEN {mn} > 0 THEN {mn} ELSE NULL END, 0))"
+                if relative else spread
+            )
+            per_ref = (
+                f"SELECT _ref_rid, {agg_expr} AS _agg FROM ({win}) _w "
+                f"GROUP BY _ref_rid"
+            )
+        elif agg_node.func in ("rise", "fall"):
+            order = "PARTITION BY _ref_rid ORDER BY _d, _erid"
+            if agg_node.func == "rise":
+                base = f"MIN(_v) OVER ({order})"
+                num = f"(_v - {base})"
+            else:
+                base = f"MAX(_v) OVER ({order})"
+                num = f"({base} - _v)"
+            inner_expr = (
+                f"({num} / NULLIF(CASE WHEN {base} > 0 THEN {base} ELSE NULL END, 0))"
+                if relative else num
+            )
+            inner = (
+                f"SELECT _ref_rid, {inner_expr} AS _delta FROM ({win}) _w "
+                f"WHERE _v IS NOT NULL"
+            )
+            per_ref = (
+                f"SELECT _ref_rid, COALESCE(MAX(_delta), 0) AS _agg "
+                f"FROM ({inner}) _i GROUP BY _ref_rid"
+            )
+        else:
+            sql_fn = _AGG_FUNC_SQL[agg_node.func]
+            per_ref = (
+                f"SELECT _ref_rid, {sql_fn}(_v) AS _agg FROM ({win}) _w "
+                f"GROUP BY _ref_rid"
+            )
+
+        if agg_node.func in ("sum", "count", "n"):
+            ok = f"COALESCE(_a._agg, 0) {agg_node.op} {agg_node.value}"
+        else:
+            ok = f"COALESCE(_a._agg {agg_node.op} {agg_node.value}, FALSE)"
+        pass_pids = (
+            f"SELECT _r.{self.pid} FROM ({ref_sql}) _r "
+            f"LEFT JOIN ({per_ref}) _a ON _a._ref_rid = _r.__rid__ "
+            f"GROUP BY _r.{self.pid} HAVING BOOL_AND({ok})"
+        )
+        return (
+            f"SELECT * FROM {self.events} "
+            f"WHERE {self.pid} IN ({pass_pids})"
+        )
 
     def _sliding_days_aggregate_sql(self, node: AggregateExpr, days: int) -> str:
         """Sliding right-anchored day-window aggregate. For each row, the
@@ -663,7 +815,12 @@ class DuckDBCompiler:
 
     def _event_window_sql(
         self, child_sql, ref_sql, inside, min_events, max_events, direction,
+        exclude_self: bool = True,
     ) -> str:
+        """`exclude_self` (default): a row never matches a window anchored
+        at itself — positions are unique per person, so `_pos <> _ref_pos`
+        removes exactly the anchor row. Anchored event-window aggregates
+        pass False so the anchor row stays inside its own window."""
         # Assign 0-based event positions per pid in input order.
         positions = (
             f"SELECT *, (ROW_NUMBER() OVER (PARTITION BY {self.pid} "
@@ -692,10 +849,11 @@ class DuckDBCompiler:
             f"SELECT _p.* FROM ({positions}) _p "
             f"WHERE _p.__rid__ IN (SELECT _ch.__rid__ FROM ({child_sql}) _ch)"
         )
+        self_pred = " AND _c._pos <> _rp._ref_pos" if exclude_self else ""
         in_window = (
             f"SELECT DISTINCT _c.* FROM ({child_pos}) _c "
             f"JOIN ({ref_pos}) _rp ON _c.{self.pid} = _rp.{self.pid} "
-            f"WHERE {offset_pred}"
+            f"WHERE {offset_pred}{self_pred}"
         )
         if inside:
             return f"SELECT * EXCLUDE (_pos) FROM ({in_window}) _x"
@@ -712,11 +870,19 @@ class DuckDBCompiler:
         sliding = node.direction is None and node.ref is None
         if sliding:
             return self._sliding_events_aggregate_sql(agg_node, node.max_events)
+        if isinstance(node.ref, Quantifier):
+            raise TypeError(
+                "Universal refs (`every REF`) are not supported for "
+                "event-window aggregates; use a day-window "
+                "(`inside N days after every REF`) instead"
+            )
         ref_sql = self.compile(node.ref)
         all_rows = f"SELECT * FROM {self.events}"
+        # exclude_self=False: the anchor row stays inside its own window.
         in_window = self._event_window_sql(
             all_rows, ref_sql, True,
             node.min_events, node.max_events, node.direction,
+            exclude_self=False,
         )
         if not node.inside:
             evaluable = f"SELECT DISTINCT {self.pid} FROM ({ref_sql}) _r"
@@ -725,7 +891,9 @@ class DuckDBCompiler:
                 f"WHERE _e.{self.pid} IN ({evaluable}) "
                 f"AND _e.__rid__ NOT IN (SELECT _w.__rid__ FROM ({in_window}) _w)"
             )
-        return self._aggregate_with_filter(agg_node, row_filter_sql=in_window)
+        return self._aggregate_with_filter(
+            agg_node, row_filter_sql=in_window, evaluable_sql=ref_sql,
+        )
 
     def _sliding_events_aggregate_sql(self, node: AggregateExpr, window_size: int) -> str:
         col = node.column
@@ -824,9 +992,10 @@ class DuckDBCompiler:
 
 class _TQueryDuckDBResult:
     """Minimal result object — same shape (count, pids) as the other
-    backends' TQueryResult for parity testing."""
+    backends' TQueryResult. `pids` is a set, matching the documented
+    TQueryResult API."""
     def __init__(self, pids: list[Any]) -> None:
-        self.pids = sorted(pids)
+        self.pids = set(pids)
         self.count = len(self.pids)
 
 

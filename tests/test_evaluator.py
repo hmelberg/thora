@@ -268,7 +268,7 @@ class TestBetweenPositional:
         # P1: window [Jan, Apr] → K50 Feb, K50 Mar match (2 rows)
         # P2: no K51 → no bounds → no matches
         # P3: window [Jan, Feb] → no K50 in that window (first K50 is Mar)
-        m = bdf.tq.mask("K50 inside 1st K51 and 2nd K51")
+        m = bdf.tq.mask("K50 inside 1st K51 to 2nd K51")
         selected = bdf[m]
         assert (selected["icd"] == "K50").all()
         assert set(selected["pid"]) == {1}
@@ -278,7 +278,7 @@ class TestBetweenPositional:
         # K50 between 1st K51 and 3rd K51:
         # P1: window [Jan, Jun] → all three K50s match (Feb, Mar, May)
         # P3: window [Jan, Apr] → K50 Mar matches (K50 May is outside)
-        m = bdf.tq.mask("K50 inside 1st K51 and 3rd K51")
+        m = bdf.tq.mask("K50 inside 1st K51 to 3rd K51")
         selected = bdf[m]
         per_person = selected.groupby("pid").size()
         assert per_person.get(1, 0) == 3
@@ -289,20 +289,20 @@ class TestBetweenPositional:
         # K50 between 1st K51 and 5th K51 (P3 has 5 K51s; P1 only 3)
         # P3: window [Jan, Jul] → K50 Mar and K50 May match
         # P1: only 3 K51s → no 5th K51 → no match for P1
-        m = bdf.tq.mask("K50 inside 1st K51 and 5th K51")
+        m = bdf.tq.mask("K50 inside 1st K51 to 5th K51")
         selected = bdf[m]
         assert set(selected["pid"]) == {3}
         assert len(selected) == 2
 
     def test_between_count(self, bdf):
         # count is person-level: persons with at least one matching K50.
-        r = tquery(bdf, "K50 inside 1st K51 and 2nd K51")
+        r = tquery(bdf, "K50 inside 1st K51 to 2nd K51")
         assert r.count == 1
         assert r.pids == {1}
 
     def test_between_missing_bound_excluded_from_evaluable(self, bdf):
         # P2 has no K51 → bounds undefined → not evaluable
-        r = tquery(bdf, "K50 inside 1st K51 and 2nd K51")
+        r = tquery(bdf, "K50 inside 1st K51 to 2nd K51")
         assert 2 not in r.evaluable_pids
 
     def test_range_days_works(self, bdf):
@@ -312,13 +312,13 @@ class TestBetweenPositional:
         assert isinstance(r.rows, pd.Series)
 
     def test_outside_bounds_complement(self, bdf):
-        inside = bdf.tq.mask("K50 inside 1st K51 and 2nd K51")
-        outside = bdf.tq.mask("K50 outside 1st K51 and 2nd K51")
+        inside = bdf.tq.mask("K50 inside 1st K51 to 2nd K51")
+        outside = bdf.tq.mask("K50 outside 1st K51 to 2nd K51")
         k50 = bdf.tq.mask("K50")
         # Inside and outside are disjoint.
         assert not (inside & outside).any()
         # Every K50 of an evaluable person is either inside or outside.
-        r = tquery(bdf, "K50 inside 1st K51 and 2nd K51")
+        r = tquery(bdf, "K50 inside 1st K51 to 2nd K51")
         evaluable_rows = bdf["pid"].isin(r.evaluable_pids)
         assert ((k50 & evaluable_rows) == (inside | outside)).all()
 
@@ -468,12 +468,12 @@ class TestShiftedAnchors:
         assert r2.pids == {1, 2, 3}
 
     def test_shifted_in_bounds(self, shdf):
-        # K50 inside 1st K51 - 10 days and 1st K51 + 200 days:
+        # K50 inside 1st K51 - 10 days to 1st K51 + 200 days:
         # Window is [K51 date - 10, K51 date + 200] per person.
         # P1: window [Dec 22 2019, Jul 19 2020]. K50 May 15 → YES.
         # P2: window [Jan 22, Aug 19]. K50 Feb 20 → YES.
         # P3: window [Feb 20, Sep 17]. K50 Mar 10 → YES.
-        r = tquery(shdf, "K50 inside 1st K51 - 10 days and 1st K51 + 200 days")
+        r = tquery(shdf, "K50 inside 1st K51 - 10 days to 1st K51 + 200 days")
         assert r.pids == {1, 2, 3}
 
     def test_shift_chain(self, shdf):
@@ -605,11 +605,14 @@ class TestQuantifiers:
             ],
         }).sort_values(["pid", "start_date"]).reset_index(drop=True)
 
-    def test_any_is_default(self, qdf):
-        # Explicit any should produce identical results to no quantifier
+    def test_any_is_existential(self, qdf):
+        # v0.2.6: `any X after any Y` = some X after some Y — a superset
+        # of the first-vs-first default. P3 (K50@5, K51@10, K50@50) fails
+        # the default but matches existentially via the second K50.
         baseline = tquery(qdf, "K50 after K51")
         with_any = tquery(qdf, "any K50 after any K51")
-        assert baseline.pids == with_any.pids
+        assert baseline.pids <= with_any.pids
+        assert 3 in with_any.pids and 3 not in baseline.pids
 
     def test_default_after(self, qdf):
         # K50 after K51 (existing semantic = first K50 after first K51):

@@ -20,8 +20,9 @@ from tquery._codes import (
     expand_codes,
     extract_codes,
     get_matching_rows,
+    is_code_column,
 )
-from tquery._stringops import interleave_strings
+from tquery._stringops import del_repeats, interleave_strings
 from tquery._types import TQueryColumnError
 
 
@@ -44,7 +45,7 @@ def _resolve_cols(
     """Resolve column specification to a concrete list."""
     if cols is None:
         return [c for c in df.columns
-                if c not in (pid, date) and pd.api.types.is_string_dtype(df[c])]
+                if c not in (pid, date) and is_code_column(df[c])]
     if isinstance(cols, str):
         return [cols]
     return list(cols)
@@ -192,7 +193,7 @@ def stringify_order(
     result.index.name = pid
 
     if not keep_repeats:
-        result = result.str.replace(r"(.)\1+", r"\1", regex=True)
+        result = del_repeats(result)
 
     if only_unique:
         def _uniqify(text: str) -> str:

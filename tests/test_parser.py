@@ -429,12 +429,12 @@ class TestParserEventAtom:
 
 
 # ---------------------------------------------------------------------------
-# Parser tests — inside EXPR and EXPR (positional bounds)
+# Parser tests — inside EXPR to EXPR (positional bounds)
 # ---------------------------------------------------------------------------
 
 class TestParserInsideBounds:
     def test_bounds_ordinals_same_code(self):
-        ast = parse("K50 inside 1st K51 and 5th K51")
+        ast = parse("K50 inside 1st K51 to 5th K51")
         assert isinstance(ast, BetweenExpr)
         assert isinstance(ast.child, CodeAtom)
         assert ast.child.codes == ("K50",)
@@ -446,22 +446,46 @@ class TestParserInsideBounds:
         assert ast.outside is False
 
     def test_bounds_different_codes(self):
-        ast = parse("K50 inside 1st K51 and 3rd K52")
+        ast = parse("K50 inside 1st K51 to 3rd K52")
         assert isinstance(ast, BetweenExpr)
         assert ast.bound_start.child.codes == ("K51",)
         assert ast.bound_end.child.codes == ("K52",)
 
     def test_bounds_events(self):
-        ast = parse("K50 inside 1st event and 10th event")
+        ast = parse("K50 inside 1st event to 10th event")
         assert isinstance(ast, BetweenExpr)
         assert isinstance(ast.bound_start.child, EventAtom)
         assert isinstance(ast.bound_end.child, EventAtom)
 
     def test_bounds_first_last_of(self):
-        ast = parse("K50 inside 1st K51 and last 1 of K51")
+        ast = parse("K50 inside 1st K51 to last 1 of K51")
         assert isinstance(ast, BetweenExpr)
         assert ast.bound_end.kind == "last"
         assert ast.bound_end.n == 1
+
+    def test_between_sugar_identical_ast(self):
+        assert (
+            parse("K50 between 1st K51 and 5th K51")
+            == parse("K50 inside 1st K51 to 5th K51")
+        )
+
+    def test_old_and_bounds_form_is_guided_error(self):
+        with pytest.raises(TQuerySyntaxError, match="inside A to B"):
+            parse("K50 inside 1st K51 and 5th K51")
+        with pytest.raises(TQuerySyntaxError, match="logical"):
+            parse("K50 inside last 5 events and K52")
+
+    def test_parenthesized_logical_and_after_span(self):
+        ast = parse("(K50 inside last 5 events) and K52")
+        assert isinstance(ast, BinaryLogical)
+        assert ast.op == "and"
+
+    def test_logical_and_after_between(self):
+        # The `and` inside `between ... and ...` is the bounds separator;
+        # a SECOND `and` is ordinary logical conjunction.
+        ast = parse("K50 between 1st K51 and 5th K51 and K52")
+        assert isinstance(ast, BinaryLogical)
+        assert isinstance(ast.left, BetweenExpr)
 
     def test_range_days(self):
         # `inside N to M days` replaces the old `between N and M days` form.
@@ -472,7 +496,7 @@ class TestParserInsideBounds:
         assert ast.direction == "after"
 
     def test_outside_bounds(self):
-        ast = parse("K50 outside 1st K51 and 5th K51")
+        ast = parse("K50 outside 1st K51 to 5th K51")
         assert isinstance(ast, BetweenExpr)
         assert ast.outside is True
 
@@ -523,7 +547,7 @@ class TestParserShiftedAnchors:
         assert ast.ref.offset_days == 7
 
     def test_shift_in_both_bounds(self):
-        ast = parse("K50 inside 1st K51 - 7 days and 5th K51 + 7 days")
+        ast = parse("K50 inside 1st K51 - 7 days to 5th K51 + 7 days")
         assert isinstance(ast, BetweenExpr)
         assert isinstance(ast.bound_start, ShiftExpr)
         assert ast.bound_start.offset_days == -7
@@ -711,12 +735,19 @@ class TestParserQuantifiers:
         assert isinstance(ast.left, Quantifier)
         assert isinstance(ast.right, Quantifier)
 
-    def test_any_is_elided(self):
-        # `any K50 after any K51` is structurally identical to `K50 after K51`
+    def test_any_wrapped_on_temporal_sides(self):
+        # v0.2.6: `any` survives on temporal sides (existential semantics);
+        # it is only elided in window contexts and standalone.
         ast = parse("any K50 after any K51")
         assert isinstance(ast, TemporalExpr)
-        assert isinstance(ast.left, CodeAtom)
-        assert isinstance(ast.right, CodeAtom)
+        assert isinstance(ast.left, Quantifier) and ast.left.kind == "any"
+        assert isinstance(ast.right, Quantifier) and ast.right.kind == "any"
+
+    def test_any_elided_standalone_and_in_windows(self):
+        assert isinstance(parse("any K50"), CodeAtom)
+        ast = parse("K50 inside 100 days after any K51")
+        assert isinstance(ast, WithinExpr)
+        assert isinstance(ast.ref, CodeAtom)
 
     def test_every_on_within_ref(self):
         ast = parse("K50 inside 100 days after every K51")

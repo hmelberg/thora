@@ -37,7 +37,7 @@ df.tq.multi("K5?[0,1,2] before L04AB?[02,04,06]")
 pip install git+https://github.com/hmelberg/thora.git
 ```
 
-Requires Python 3.10+ and pandas.
+Requires Python 3.10+ and pandas (pandas 3.x recommended; 2.x supported).
 
 Optional backends (install only what you need):
 - **Polars**: `pip install polars` — fast for sliding aggregates
@@ -74,8 +74,9 @@ df[df.tq.mask("K50 inside 90 days after K51")]
 |---|---|
 | `K50` | Has diagnosis code K50 |
 | `K50*` | Any code starting with K50 |
-| `K50 before K51` | K50 occurs before K51 (same person) |
-| `K50 after K51` | K50 occurs after K51 |
+| `K50 before K51` | First K50 before first K51 (same person) |
+| `any K50 before any K51` | Existential: *some* K50 before *some* K51 |
+| `K50 after K51` | First K50 after first K51 |
 | `K50 and K51` | Person has both K50 and K51 |
 | `K50 or K51` | Person has K50 or K51 |
 | `not K50` | Person does not have K50 |
@@ -88,6 +89,7 @@ df[df.tq.mask("K50 inside 90 days after K51")]
 | `5th event` / `last 5 events` | Universal-row atom: any row in the timeline |
 | `min 3 of K50` | At least 3 events with K50 |
 | `2-5 of K50` | Between 2 and 5 events with K50 |
+| `0-2 of K50` | At most 2 events with K50, including none |
 | `1st K50 before K51` | First K50 before any K51 |
 | `-1st K50` | The last K50 per person (negative ordinal) |
 | `1st K51 before 1st K50 - 100 days` | Shifted anchor — more than 100 days apart |
@@ -100,6 +102,7 @@ df[df.tq.mask("K50 inside 90 days after K51")]
 | **`sum(painkillers) > 300`** | **v0.2** — Sum a numeric column per person |
 | **`mean(BP) > 140`** | **v0.2** — mean / min / max / median / sd / var / count |
 | **`sum(dose) > 300 inside 90 days after I21`** | **v0.2** — Anchored aggregate window |
+| **`sum(dose) > 300 inside 90 days after every I21`** | **v0.2.5** — Per-ref: every I21's own window must pass |
 | **`sum(dose) > 300 inside 90 days`** | **v0.2** — Sliding (any 90-day stretch) |
 | **`range(BP) > 30 inside 5 events`** | **v0.2.1** — Range over a sliding event window |
 | **`rise(BP) > 20`** | **v0.2.2** — Max drawup (BP rose by > 20 at some point) |

@@ -16,6 +16,25 @@ import pandas as pd
 from tquery._types import TQueryCodeError
 
 
+def is_code_column(series: pd.Series) -> bool:
+    """True if a column can hold medical codes (is string-like).
+
+    `pd.api.types.is_string_dtype` alone is not enough: on pandas 2.x it
+    returns False for object columns that contain any NaN (it infers from
+    the values), which is exactly the shape produced by `tquery.combine`
+    — rows from one source have NaN in the other source's code columns.
+    So object columns are re-checked on their non-null values, and
+    Categorical columns on their categories.
+    """
+    dtype = series.dtype
+    if isinstance(dtype, pd.CategoricalDtype):
+        return bool(pd.api.types.is_string_dtype(dtype.categories))
+    if dtype == object:
+        non_null = series.dropna()
+        return bool(len(non_null)) and bool(pd.api.types.is_string_dtype(non_null))
+    return bool(pd.api.types.is_string_dtype(series))
+
+
 def resolve_columns(
     patterns: list[str],
     all_columns: list[str],

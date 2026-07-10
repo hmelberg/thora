@@ -16,7 +16,7 @@ from tquery._codebook import (
     get_label,
     search_codes,
 )
-from tquery._codes import extract_codes
+from tquery._codes import extract_codes, is_code_column
 from tquery._evaluator import Evaluator
 
 # Optional backends — imports are deferred so `pip install tquery`
@@ -689,7 +689,7 @@ class TQueryAccessor:
         if cols is None:
             cols = [c for c in self._df.columns
                     if c not in (cfg.pid, cfg.date)
-                    and pd.api.types.is_string_dtype(self._df[c])]
+                    and is_code_column(self._df[c])]
         elif isinstance(cols, str):
             cols = [cols]
 

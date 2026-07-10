@@ -27,7 +27,7 @@ Whitespace is insignificant except as a separator between tokens. Tokens are mat
 
 ```
 before  after  simultaneously
-inside  outside
+inside  outside  between
 and  or  not  never
 min  max  exactly
 of  in  to
@@ -81,12 +81,16 @@ range_prefix      = INT_RANGE , [ "of" ] ;
 ordinal_prefix    = [ "-" ] , ORDINAL , [ "of" ] ;     (* "-2nd" = 2nd-from-last *)
 first_last_prefix = ( "first" | "last" ) , INT , [ "of" ] ;
 
-within_or_atom    = atom , [ within_tail ] ;
+within_or_atom    = atom , [ within_tail | between_tail ] ;
 within_tail       = ( "inside" | "outside" ) , inside_body ;
+between_tail      = "between" , prefix_expr , "and" , prefix_expr ;   (* sugar for expr bounds *)
 inside_body       = numeric_window | expr_window ;
 numeric_window    = signed_int , [ "to" , signed_int ] , ( "days" | "event" | "events" )
                   , [ direction , [ "of" ] , window_ref ] ;
-expr_window       = prefix_expr , [ "and" , prefix_expr ] ;   (* span vs. between *)
+expr_window       = prefix_expr , [ "to" , prefix_expr ] ;   (* span vs. bounds *)
+(* NOTE: `inside EXPR and EXPR` is a guided parse error — `and` after a
+   span is reserved for logical conjunction; write `inside A to B` or
+   `X between A and B` for date bounds. *)
 direction         = "before" | "after" | "around" ;
 window_ref        = quantified | prefix_expr ;
 signed_int        = [ "-" ] , INT ;

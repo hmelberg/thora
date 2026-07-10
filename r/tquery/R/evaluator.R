@@ -103,7 +103,9 @@ tq_eval.RangePrefixExpr <- function(node, env) {
   child <- tq_eval(node$child, env)
   pid   <- as.character(env$pid)
   counts <- .by_transform_sum(child, pid)
-  child & counts >= node$min_n & counts <= node$max_n
+  result <- child & counts >= node$min_n & counts <= node$max_n
+  if (node$min_n == 0L) result <- result | (counts == 0L)  # explicit-0 rule
+  result
 }
 
 .by_transform_sum <- function(mask, pid) {
@@ -123,10 +125,15 @@ tq_eval.RangePrefixExpr <- function(node, env) {
   dt$cs
 }
 
+# Explicit-0 rule: a literal 0 (`min 0`, `max 0`, `exactly 0`, `0-N of`)
+# includes zero-count persons, marked on their full timeline (the `not`
+# convention). n >= 1 keeps the classic behavior (matching rows only).
 .eval_count_prefix <- function(kind, n, mask, pid) {
   counts <- .by_transform_sum(mask, pid)
   ok <- switch(kind, min = counts >= n, max = counts <= n, exactly = counts == n)
-  mask & ok
+  result <- mask & ok
+  if (n == 0L) result <- result | (counts == 0L)
+  result
 }
 
 .eval_ordinal <- function(n, mask, pid) {
@@ -169,6 +176,8 @@ tq_eval.RangePrefixExpr <- function(node, env) {
 }
 
 tq_eval.TemporalExpr <- function(node, env) {
+  any_left  <- inherits(node$left,  "Quantifier") && node$left$kind == "any"
+  any_right <- inherits(node$right, "Quantifier") && node$right$kind == "any"
   L  <- .unwrap_quantifier(node$left)
   if (inherits(L$inner, "ShiftExpr")) {
     stop("Shifted anchors are only valid on the reference side of before/after/simultaneously")
@@ -182,6 +191,7 @@ tq_eval.TemporalExpr <- function(node, env) {
   right_mask <- tq_eval(R$inner, env)
   eval_before_after(env, left_mask, right_mask, node$op,
                     every_left  = L$every, every_right = R$every,
+                    any_left = any_left, any_right = any_right,
                     left_offset_days = 0L, right_offset_days = R_offset)
 }
 
@@ -287,7 +297,10 @@ tq_eval.AggregateExpr <- function(node, env) {
   .eval_aggregate(node, env, row_mask = NULL)
 }
 
-.eval_aggregate <- function(node, env, row_mask = NULL) {
+# `evaluable_pids` (anchored windows): persons whose window may be EMPTY
+# still get an aggregate — the empty-set defaults are 0 for sum/count and
+# NA for everything else (NA fails every comparison via .OP_FNS).
+.eval_aggregate <- function(node, env, row_mask = NULL, evaluable_pids = NULL) {
   if (!node$column %in% names(env$dt)) {
     stop(sprintf("Column '%s' not in data", node$column))
   }
@@ -305,6 +318,14 @@ tq_eval.AggregateExpr <- function(node, env) {
 
   agg_dt <- data.table::data.table(p = pid_sub, v = col_sub)
   per_pid <- agg_dt[, .(agg = agg_fn(v)), by = p]
+
+  if (!is.null(evaluable_pids)) {
+    missing <- setdiff(evaluable_pids, per_pid$p)
+    if (length(missing) > 0L) {
+      default <- if (node$func %in% c("sum", "count", "n")) 0 else NA_real_
+      per_pid <- rbind(per_pid, data.table::data.table(p = missing, agg = default))
+    }
+  }
 
   matching_pids <- per_pid$p[op_fn(per_pid$agg, node$value)]
   pid %in% matching_pids
@@ -325,18 +346,78 @@ tq_eval.AggregateExpr <- function(node, env) {
   R  <- .unwrap_quantifier(node$ref)
   rh <- .unwrap_shift(R$inner)
   ref_mask <- tq_eval(rh$inner, env)
+  if (isTRUE(R$every)) {
+    if (isTRUE(node$outside)) {
+      stop("`outside ... every REF` has no defined semantics for anchored aggregates")
+    }
+    return(.eval_aggregate_per_ref(agg_node, node, ref_mask, rh$offset, env))
+  }
   all_rows <- rep(TRUE, env$nrow)
+  # exclude_self = FALSE: an anchor row stays inside its own window.
   in_window <- eval_within_days(
     env, all_rows, ref_mask, node$days,
     min_days = node$min_days, direction = node$direction,
-    ref_offset_days = rh$offset
+    ref_offset_days = rh$offset, exclude_self = FALSE
   )
+  evaluable_pids <- unique(env$pid[ref_mask])
   if (isTRUE(node$outside)) {
-    evaluable_pids <- unique(env$pid[ref_mask])
     out_window <- (env$pid %in% evaluable_pids) & !in_window
-    return(.eval_aggregate(agg_node, env, row_mask = out_window))
+    return(.eval_aggregate(agg_node, env, row_mask = out_window,
+                           evaluable_pids = evaluable_pids))
   }
-  .eval_aggregate(agg_node, env, row_mask = in_window)
+  .eval_aggregate(agg_node, env, row_mask = in_window,
+                  evaluable_pids = evaluable_pids)
+}
+
+# `AGG(col) OP x inside ... DIRECTION every REF` — per-ref window
+# aggregates. For each ref row, aggregate the column over that ref's own
+# day-window; a person matches iff they have >= 1 ref and EVERY ref
+# passes. Unmatched refs join as a single NA row, so empty windows get
+# the standard defaults (sum/count -> 0, everything else -> NA -> fail).
+# The anchor row is inside its own window when the band contains 0.
+.eval_aggregate_per_ref <- function(agg_node, node, ref_mask, ref_offset, env) {
+  if (!agg_node$column %in% names(env$dt)) {
+    stop(sprintf("Column '%s' not in data", agg_node$column))
+  }
+  if (!any(ref_mask)) return(rep(FALSE, env$nrow))
+
+  bands <- .window_bands(node$direction, node$min_days, node$days)
+  # Row window per ref: [t + shift - b, t + shift - a] for band c(a, b).
+  # Sort bands by descending b so multi-band (`around`) windows
+  # concatenate chronologically (matters for rise / fall).
+  bands <- bands[order(-vapply(bands, `[`, numeric(1), 2L))]
+
+  refs <- data.table(
+    pid     = env$pid[ref_mask],
+    t       = env$date[ref_mask] + ref_offset,
+    ref_rid = which(ref_mask)
+  )
+  rows <- data.table(
+    pid = env$pid,
+    d   = env$date,
+    v   = as.numeric(env$dt[[agg_node$column]])
+  )
+  setkey(rows, pid, d)
+
+  pieces <- vector("list", length(bands))
+  for (i in seq_along(bands)) {
+    band <- bands[[i]]
+    refs[, `:=`(lo = t - band[2L], hi = t - band[1L])]
+    pieces[[i]] <- rows[refs,
+      .(pid = i.pid, ref_rid = i.ref_rid, v = x.v),
+      on = .(pid, d >= lo, d <= hi), allow.cartesian = TRUE
+    ]
+  }
+  win <- data.table::rbindlist(pieces)
+
+  agg_fn <- .AGG_FNS[[.agg_fn_key(agg_node)]]
+  op_fn  <- .OP_FNS[[agg_node$op]]
+  per_ref <- win[, .(agg = agg_fn(v)), by = .(pid, ref_rid)]
+  per_ref[, ok := op_fn(agg, agg_node$value)]
+
+  bad  <- unique(per_ref$pid[!per_ref$ok])
+  pass <- setdiff(unique(per_ref$pid), bad)
+  env$pid %in% pass
 }
 
 .eval_aggregate_sliding <- function(node, days, env) {
@@ -401,18 +482,25 @@ tq_eval.InsideExpr <- function(node, env) {
     return(.eval_aggregate_sliding_events(agg_node, node$max_events, env))
   }
   # Anchored: build a row mask of rows in the event-window of any ref, then agg.
+  if (inherits(node$ref, "Quantifier")) {
+    stop("Universal refs (`every REF`) are not supported for event-window ",
+         "aggregates; use a day-window (`inside N days after every REF`) instead")
+  }
   ref_mask <- tq_eval(node$ref, env)
   all_rows <- rep(TRUE, env$nrow)
+  # exclude_self = FALSE: the anchor row stays inside its own window.
   in_window <- eval_inside_outside(env, all_rows, ref_mask,
                                    inside = TRUE,
                                    min_events = node$min_events,
                                    max_events = node$max_events,
-                                   direction = node$direction)
+                                   direction = node$direction,
+                                   exclude_self = FALSE)
+  evaluable_pids <- unique(env$pid[ref_mask])
   if (!isTRUE(node$inside)) {
-    evaluable_pids <- unique(env$pid[ref_mask])
     in_window <- (env$pid %in% evaluable_pids) & !in_window
   }
-  .eval_aggregate(agg_node, env, row_mask = in_window)
+  .eval_aggregate(agg_node, env, row_mask = in_window,
+                  evaluable_pids = evaluable_pids)
 }
 
 .eval_aggregate_sliding_events <- function(node, window_size, env) {

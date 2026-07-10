@@ -186,10 +186,14 @@ class ShiftExpr:
 class Quantifier:
     """Universal or existential quantifier over an atom in a temporal context.
 
-    kind='any' is the default existential and is semantically a no-op — the
-    parser elides it. kind='every' is universal: the surrounding temporal
-    or within predicate must hold for ALL events of the child atom, AND the
-    child must be non-empty for the person (no vacuous truth).
+    kind='every' is universal: the surrounding temporal or within
+    predicate must hold for ALL events of the child atom, AND the child
+    must be non-empty for the person (no vacuous truth).
+
+    kind='any' is existential and only appears on the sides of a
+    temporal comparison (`any X before any Y` — "some X before some Y",
+    min(X) < max(Y)). In window contexts and standalone positions the
+    parser elides it as a no-op, so window evaluators never see it.
     """
     kind: str  # 'any' | 'every'
     child: ASTNode  # always a CodeAtom (enforced at parse time)

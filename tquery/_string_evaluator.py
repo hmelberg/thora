@@ -33,7 +33,7 @@ from tquery._ast import (
     WithinExpr,
     WithinSpanExpr,
 )
-from tquery._codes import collect_unique_codes, expand_codes
+from tquery._codes import collect_unique_codes, expand_codes, is_code_column
 from tquery._parser import parse
 from tquery._stringify import (
     _prepare,
@@ -639,7 +639,7 @@ def string_query_auto(
     if stringify_cols is None:
         resolved_cols = [
             c for c in df.columns
-            if c not in (pid_col, date_col) and pd.api.types.is_string_dtype(df[c])
+            if c not in (pid_col, date_col) and is_code_column(df[c])
         ]
     elif isinstance(stringify_cols, str):
         resolved_cols = [stringify_cols]

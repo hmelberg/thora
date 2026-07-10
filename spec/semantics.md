@@ -100,12 +100,26 @@ Form: `sum(col) > 300 inside N days [direction] Y`.
 
 The wrapper's `child` is an `AggregateExpr` and the wrapper has a `direction` ∈ {`"before"`, `"after"`, `"around"`} with a `ref` set. Semantics:
 
-1. Compute the row mask `M = WithinExpr_rows(non-aggregate semantics)` — the rows whose date is within `[min_days, days]` of a qualifying ref event (existing `eval_within_days` logic).
-2. For each person, aggregate the target column over rows ∈ `M`: `agg = f(col[M ∧ pid==p])`.
+1. Compute the row mask `M = WithinExpr_rows(non-aggregate semantics)` — the rows whose date is within `[min_days, days]` of a qualifying ref event (existing `eval_within_days` logic), with **self-exclusion disabled**: an anchor row lies inside its own window, so `sum(dose) inside 90 days after B01` includes the index B01 row's own dose.
+2. For each **evaluable** person (≥ 1 ref event), aggregate the target column over rows ∈ `M`: `agg = f(col[M ∧ pid==p])`. Persons whose window is EMPTY still get an aggregate, using the empty-set defaults from the aggregate table — `sum`/`count` → `0` (which compares normally, so `count(dose) == 0 inside ... after Y` selects persons with *no* qualifying rows), everything else → `NA` (fails the comparison). Non-evaluable persons never match.
 3. Apply the threshold test per person; broadcast back to rows.
-4. `outside=True` flips to row-level complement, restricted to evaluable persons.
+4. `outside=True` flips to row-level complement, restricted to evaluable persons; empty outside-sets get the same defaults.
 
 Range windows (`inside 30 to 90 days after Y`) work the same way — the row mask just bounds `min_days` and `days` differently.
+
+#### Universal ref (v0.2.5): `sum(col) > 300 inside N days after every Y`
+
+When the ref is quantified with `every`, the aggregate is evaluated **per reference event**, not over the union of windows:
+
+1. For EACH ref row `r`, aggregate the column over the rows of the same person falling in `r`'s own day-window (same band arithmetic as above; the anchor row is inside its own window when the band contains offset 0).
+2. Test the threshold per ref. Empty windows use the standard aggregate defaults — `sum`/`count` evaluate to `0` and compare normally; every other aggregate is `NA` and fails.
+3. The person matches iff they have **at least one ref** (no vacuous truth) and **every** ref's window passes. All rows of matching persons are returned.
+
+Reading: "after every MI, the cumulative dose in the following 90 days exceeded 300."
+
+`outside ... every REF` is rejected (no defined semantics). Universal refs for **event-window** aggregates (`inside N events after every Y`) are rejected in v0.2.5 — use a day-window instead.
+
+For multi-band windows (`around` with a positive lower bound), the two band slices are concatenated in chronological order before aggregating — this matters for the order-sensitive aggregates (`rise`, `fall`).
 
 ---
 
@@ -167,8 +181,10 @@ Operates on the row-level mask of its child, restricted within each person.
 | `kind` | Semantics |
 |---|---|
 | `"min"` | Persons with `≥ n` matching rows; all matching rows for those persons are kept. |
-| `"max"` | Persons with `≤ n` matching rows; all matching rows for those persons are kept. |
+| `"max"` | Persons with `≤ n` matching rows **and ≥ 1** (`max 2 of K50` reads "has K50, at most 2"); all matching rows kept. For the zero-inclusive reading, write the 0: `0-2 of K50`. |
 | `"exactly"` | Persons with exactly `n` matching rows; all matching rows for those persons are kept. |
+
+**Explicit-0 rule.** Persons with ZERO matching rows are included exactly when the expression contains a literal `0`: `exactly 0 of X` ≡ `max 0 of X` ≡ `not X`; `min 0 of X` is the tautology (every person); `0-N of X` (RangePrefixExpr) means "at most N, including none". Zero-count persons have no matching rows to mark, so they are marked on their **full timeline** — the same broadcast convention as `NotExpr` and the aggregates. Consequences (documented, same caveats as `not`): in temporal composition their dates are their whole history, `event_counts` reflects marked rows rather than code counts, and `filter()` returns all their rows. With `n ≥ 1` nothing changes: the classic behavior requires at least one match and marks only matching rows.
 | `"ordinal"`, `n > 0` | Keep the `n`th matching row per person, counting from the start (row order = (pid, date) order). |
 | `"ordinal"`, `n < 0` | Keep the `|n|`th matching row per person, counting from the end. `n = -1` is the last match. |
 | `"first"` | Keep the first `n` matching rows per person. |
@@ -180,7 +196,7 @@ Operates on the row-level mask of its child, restricted within each person.
 
 ### `RangePrefixExpr`
 
-Persons with between `min_n` and `max_n` matching rows (inclusive); all matching rows for those persons are kept.
+Persons with between `min_n` and `max_n` matching rows (inclusive); all matching rows for those persons are kept. With `min_n = 0` (an explicit `0-N of X`), zero-count persons are included too, marked on their full timeline (see the explicit-0 rule under `PrefixExpr`).
 
 ---
 
@@ -205,11 +221,30 @@ Person-level semantics.
 
 ### `TemporalExpr`
 
-#### Existential default
+#### Default: "first vs first"
 
-- `A before B` ⇒ `min(date_A) < min(date_B)` per person. "First A precedes first B."
-- `A after B` ⇒ `max(date_A) > max(date_B)` per person. (Historically: "Some A follows some B" — implemented as last A after last B due to the implicit universal semantics described below.)
+- `A before B` ⇒ `min(date_A) < min(date_B)` per person. "The first A precedes the first B."
+- `A after B` ⇒ `min(date_A) > min(date_B)` per person. "The first A follows the first B."
 - `A simultaneously B` ⇒ `∃ date d : d ∈ dates_A(p) ∧ d ∈ dates_B(p)` per person.
+
+Note this default is NOT existential: a person with K51 (2010), K50 (2012), K51 (2015) does **not** match `K50 before K51`, even though *a* K50 precedes *a* K51 — the first K50 (2012) is after the first K51 (2010). The default reads each side as its **first** event, which is the standard incidence framing ("disease onset before treatment start"). For the existential reading, use `any` (below).
+
+#### Existential modifier: `any`
+
+Either side may be quantified with `any`, meaning "some event on this side":
+
+| Form | Meaning | Predicate |
+|---|---|---|
+| `any A before any B` | some A before some B | `min(A) < max(B)` |
+| `A before any B` | first A before some B | `min(A) < max(B)` (= any/any) |
+| `any A before B` | some A before first B | `min(A) < min(B)` (= default; documented no-op) |
+| `any A after any B` | some A after some B | `max(A) > min(B)` |
+| `any A after B` | some A after first B | `max(A) > min(B)` (= any/any) |
+| `A after any B` | first A after some B | `min(A) > min(B)` (= default; documented no-op) |
+| `every A before any B` | every A before some B | `max(A) < max(B)` (= `every A before B`) |
+| `any A before every B` | some A before every B | `min(A) < min(B)` (= default) |
+
+`any` requires both sides non-empty (the person must have events on each side — automatic, since an existential over an empty set is false). For `simultaneously` `any` is a no-op (already existential). In WINDOW contexts (`inside ... after any Y`, `any X inside ...`) and standalone (`any X`), `any` is elided by the parser as a no-op — windows are already existential over their events — so `Quantifier(kind="any")` only ever appears as a direct child of `TemporalExpr`.
 
 **Result.** All rows of `A` for matching persons (left-anchored convention).
 
@@ -238,21 +273,24 @@ When the right or left side is a `ShiftExpr`, the shifted side's dates are adjus
 
 ### `WithinExpr`
 
-Time-window predicate. The full algorithm in `tquery/_temporal.py:eval_within_days`.
+Time-window predicate. The full algorithm in `tquery/_temporal.py:eval_within_days` (band construction in `window_bands`, existence test in `band_window_match`).
 
-**Existential (default).** For each child row, find the nearest reference row in the relevant direction within `[min_days, days]` (inclusive on both ends, in absolute day-difference). Child row matches if such a ref exists.
+**Existential (default).** The window spec is translated into one or two closed day-offset *bands*; a child row matches iff **any** reference row of the same person falls in a band. All reference rows are considered — implementations MUST NOT test only the nearest ref and then apply the lower bound (an asof/roll-nearest join followed by a `min_days` filter produces false negatives whenever the nearest ref is closer than `min_days` but a farther qualifying ref exists).
 
-**Direction → asof direction.**
+**Direction → band(s).** A ref at day `t` qualifies for a child at day `d` iff `t ∈ [d + a, d + b]`:
 
-| `direction` | asof direction from child to ref | Meaning |
+| `direction` | band(s) `(a, b)` | Meaning |
 |---|---|---|
-| `"after"` | backward (find ref BEFORE child within tolerance) | child happens after ref |
-| `"before"` | forward (find ref AFTER child within tolerance) | child happens before ref |
-| `"around"` (unsigned, `min_days ≥ 0`) | nearest | child within |diff| ≤ days of ref |
-| `"around"` (signed, `min_days < 0`) | both backward and forward | signed diff in `[min_days, days]` |
+| `"after"` | `(−days, −min_days)` | child happens `min_days..days` after ref |
+| `"before"` | `(min_days, days)` | child happens `min_days..days` before ref |
+| `"around"` (unsigned, `min_days = 0`) | `(−days, days)` | child within `days` of ref, either side |
+| `"around"` (unsigned, `min_days > 0`) | `(−days, −min_days)` and `(min_days, days)` | `min_days ≤ |diff| ≤ days`, either side |
+| `"around"` (signed, `min_days < 0`) | `(−days, −min_days)` | signed diff `child − ref` in `[min_days, days]` (covers wholly-negative windows) |
 | `null` | (no ref) | distance from each person's first event |
 
-**Inclusivity.** `|diff| ≥ min_days` AND `|diff| ≤ days` (for unsigned). Both ends inclusive. Implementations that use exclusive upper bounds (e.g., `data.table` `roll = days` is strict-less-than) MUST adjust accordingly.
+**Inclusivity.** Both band ends inclusive. Implementations with exclusive bounds in their join primitives MUST adjust accordingly.
+
+**Self-exclusion.** A row never serves as its own reference. This only matters when a row matches both the child and the ref pattern (`X inside 5 days after X`, `K50* inside 5 days after K50`): the row itself does not satisfy its own window, but a *different* row on the same date does. Consequently `X inside 0 to 5 days after X` reads "the person got another X within 0–5 days of an X" — a lone X does not match; two same-date X rows do. The first-event form (`ref = null`) is anchored on a per-person *date*, not a row, so no self-exclusion applies there. Anchored aggregates also opt out (see the `AggregateExpr` anchored section).
 
 **`outside=True`.** Row-level complement of the positive form, restricted to **evaluable persons**. A person is evaluable if they have at least one row matching the child AND (when `ref` is given) at least one row matching the ref. Non-evaluable persons contribute no `outside` matches.
 
@@ -278,11 +316,17 @@ For each reference row at position `p`:
 
 Child rows whose position falls in any such window are marked. `inside=False` (i.e., `outside`) yields the complement, restricted to evaluable persons.
 
+**Parser shorthands vs literal ranges.** The bare forms get shorthands: `inside N events after Y` ⇒ `min_events=1, max_events=N` (the anchor is excluded), and `inside N events around Y` ⇒ the symmetric window `min_events=−N, max_events=N` (mirroring `inside N days around Y`). Explicit ranges (`M to N`) are ALWAYS taken literally — `inside 0 to 5 events after Y` stores `min_events=0`.
+
+**Self-exclusion.** As with day windows, a row never matches a window anchored at itself. Positions are unique per row, so offset 0 IS the anchor row — implementations exclude `position == ref_position` from each ref's window. Without this, any window containing offset 0 (`around` ranges spanning zero, explicit `0 to N`) would trivially match self-referential patterns (`X inside -3 to 5 events around X`). Consequently, for predicates `inside 0 to N events after Y` is observably identical to `inside 1 to N events after Y`; the literal 0 only matters for anchored aggregates, which opt out of self-exclusion (the anchor row's own value is part of its window — same convention as day-window aggregates).
+
 **Position ambiguity at equal dates.** When multiple rows share the same `(pid, date)`, their relative position depends on input row order. Specify the input order to lock determinism.
 
 ---
 
 ### `BetweenExpr` / `WithinSpanExpr`
+
+Surface forms for `BetweenExpr`: `X inside A to B` (and `X outside A to B` for the complement) or the sugar `X between A and B`. The historical `X inside A and B` is a guided parse error — `and` after a span is reserved for logical conjunction.
 
 Both compute a per-person date range from the reference expression(s):
 
@@ -319,7 +363,7 @@ Given a final row-level mask `M` aligned to the input table:
 
 ## Edge cases for `AggregateExpr` (cross-port test priority)
 
-1. **Empty cohort for the column**: person has the column all NA — `sum` returns 0; `mean`/`sd`/etc. return NA → comparison False.
+1. **Empty cohort for the column**: person has the column all NA — `sum` returns 0; `mean`/`sd`/etc. return NA → comparison False. The same defaults apply to a person whose anchored window contains NO rows at all (the person must still have ≥ 1 ref event to be evaluable). SQL ports beware: `SUM` over an empty or all-NULL group is NULL in SQL — coalesce to 0.
 2. **Single value**: `sd`/`var` on a single value are NA → comparison False. `mean` returns the value. `median` returns the value.
 3. **Boundary inclusivity (sliding)**: rolling window for date `d_r` is `[d_r - N, d_r]` INCLUSIVE both ends. A row exactly N days before `d_r` is in the window.
 4. **Boundary inclusivity (anchored)**: same as existing `WithinExpr` — `min_days ≤ |delta| ≤ days`.
@@ -340,3 +384,5 @@ Given a final row-level mask `M` aligned to the input table:
 8. **Negative ordinals.** `-1st X` selects the last X; `-2nd X` selects the second-to-last.
 9. **Shift across DST.** Day-precision dates avoid DST entirely; ports must use integer day arithmetic, not seconds.
 10. **Mixed code/column case.** Codes are matched case-sensitively against cell values; keyword identification is case-insensitive on parse.
+11. **Lower-bounded windows with a decoy ref.** `K50 inside 30 to 90 days after K51` where the person's *nearest* preceding K51 is 5 days back but another K51 is 60 days back MUST match. Exercised by the `3 to 10 days around` / `-10 to -3 days around` golden queries.
+12. **Self-referential windows.** `X inside 5 days after X`: a lone X does not match (no *other* X); two X rows on the same date both match; `inside 1 to 5 days` excludes the same-date pair but finds an X 1–5 days back. See the `WithinExpr` self-exclusion rule.

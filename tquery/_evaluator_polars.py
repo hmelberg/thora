@@ -44,6 +44,12 @@ from tquery._ast import (
     WithinSpanExpr,
 )
 from tquery._codes import expand_all_codes, resolve_columns
+from tquery._temporal import (
+    band_window_match,
+    mirror_bands,
+    per_ref_window_agg_pass,
+    window_bands,
+)
 from tquery._types import TQueryColumnError, TQueryResult
 
 _OPS = {
@@ -130,15 +136,6 @@ def _agg_scalar(v: np.ndarray, func: str, relative: bool = False) -> float:
         ratio = np.where(safe, (cm - v) / np.where(safe, cm, 1.0), 0.0)
         return float(ratio.max())
     raise ValueError(f"Unknown aggregate function: {func!r}")
-
-
-def _shift_dates(dates: pl.Series, days: int) -> pl.Series:
-    """Shift a date Series by an integer number of days via numpy."""
-    if days == 0:
-        return dates
-    arr = dates.to_numpy().astype("datetime64[D]")
-    arr = arr + np.timedelta64(days, "D")
-    return pl.Series(arr).cast(pl.Date)
 
 
 class PolarsEvaluator:
@@ -266,9 +263,17 @@ class PolarsEvaluator:
         local = pl.DataFrame({"_p": pid, "_m": child_int})
         if kind in ("min", "max", "exactly"):
             total = local.with_columns(_t=pl.col("_m").sum().over("_p")).get_column("_t")
-            if kind == "min": return child & (total >= n)
-            if kind == "max": return child & (total <= n)
-            return child & (total == n)
+            if kind == "min":
+                result = child & (total >= n)
+            elif kind == "max":
+                result = child & (total <= n)
+            else:
+                result = child & (total == n)
+            if n == 0:
+                # Explicit-0 rule: zero-count persons included, marked on
+                # their full timeline (the `not` convention).
+                result = result | (total == 0)
+            return result
         # cumulative count of TRUEs per pid, in input order
         local = local.with_columns(_cs=pl.col("_m").cum_sum().over("_p"))
         cs = local.get_column("_cs")
@@ -292,7 +297,11 @@ class PolarsEvaluator:
             .with_columns(_t=pl.col("_m").sum().over("_p"))
             .get_column("_t")
         )
-        return child & (total >= node.min_n) & (total <= node.max_n)
+        result = child & (total >= node.min_n) & (total <= node.max_n)
+        if node.min_n == 0:
+            # Explicit-0 rule: `0-N of X` includes zero-count persons.
+            result = result | (total == 0)
+        return result
 
     # ---- logical / not ----
 
@@ -321,6 +330,8 @@ class PolarsEvaluator:
     # ---- temporal (before/after/simultaneously) ----
 
     def _eval_temporal(self, node: TemporalExpr) -> pl.Series:
+        any_left = isinstance(node.left, Quantifier) and node.left.kind == "any"
+        any_right = isinstance(node.right, Quantifier) and node.right.kind == "any"
         left_inner, every_left = _unwrap_quantifier(node.left)
         if isinstance(left_inner, ShiftExpr):
             raise TypeError("Shifted anchors only valid on RHS")
@@ -374,6 +385,11 @@ class PolarsEvaluator:
                 ok = agg.get_column("l_max") < agg.get_column("r_min")
             elif every_left:
                 ok = agg.get_column("l_max") < agg.get_column("r_max")
+            elif every_right:
+                ok = agg.get_column("l_min") < agg.get_column("r_min")
+            elif any_right:
+                # existential: some left before some right
+                ok = agg.get_column("l_min") < agg.get_column("r_max")
             else:
                 ok = agg.get_column("l_min") < agg.get_column("r_min")
         else:
@@ -381,6 +397,11 @@ class PolarsEvaluator:
                 ok = agg.get_column("l_min") > agg.get_column("r_max")
             elif every_right:
                 ok = agg.get_column("l_max") > agg.get_column("r_max")
+            elif every_left:
+                ok = agg.get_column("l_min") > agg.get_column("r_min")
+            elif any_left:
+                # existential: some left after some right
+                ok = agg.get_column("l_max") > agg.get_column("r_min")
             else:
                 ok = agg.get_column("l_min") > agg.get_column("r_min")
         matching_pids = agg.filter(ok).get_column("_p").to_list()
@@ -445,83 +466,41 @@ class PolarsEvaluator:
         return child_mask & pid.is_in(matching_pids)
 
     def _rows_in_window(
-        self, child_mask, ref_mask, days, min_days, direction, ref_offset_days,
+        self, query_mask, target_mask, days, min_days, direction,
+        ref_offset_days, exclude_self: bool = True,
+        from_ref_side: bool = False,
     ) -> pl.Series:
-        """Row mask of child rows whose date falls in the day-window of
-        at least one ref row. Uses polars `join_asof` for speed; falls
-        back to a per-pid two-pointer scan only for signed-around (which
-        needs both directions) or unrestricted (direction == None).
+        """Row mask of query rows with >= 1 target row in the day-window.
+
+        Delegates to the backend-neutral band-existence core in
+        `tquery._temporal` (all qualifying targets are considered, not
+        just the nearest — see `band_window_match`).
+
+        `from_ref_side=True` evaluates the mirrored predicate (query =
+        ref rows, target = child rows) for the `every_right` universal
+        mode; the ref-offset then shifts the query side.
         """
-        pid = self.df.get_column(self.pid)
-        date_col = self.df.get_column(self.date)
-
-        signed_around = direction == "around" and min_days < 0
-        # Build child + ref small frames for the join.
-        idx_series = pl.Series("_idx", np.arange(self.nrow), dtype=pl.UInt32)
-        child_df = pl.DataFrame({
-            self.pid: pid.filter(child_mask),
-            self.date: date_col.filter(child_mask),
-            "_idx": idx_series.filter(child_mask),
-        }).sort([self.pid, self.date])
-
-        ref_date_shifted = (
-            _shift_dates(date_col.filter(ref_mask), ref_offset_days)
-            if ref_offset_days else date_col.filter(ref_mask)
+        pid_np = self.df.get_column(self.pid).to_numpy()
+        _, pid_codes = np.unique(pid_np, return_inverse=True)
+        day = (
+            self.df.get_column(self.date).to_numpy()
+            .astype("datetime64[D]").astype(np.int64)
         )
-        ref_df = pl.DataFrame({
-            self.pid: pid.filter(ref_mask),
-            "_ref_date": ref_date_shifted,
-        }).sort([self.pid, "_ref_date"])
 
-        result = np.zeros(self.nrow, dtype=bool)
-
-        def _apply_asof(strategy: str, tolerance: int) -> None:
-            """One backward/forward join; mark child rows whose matched
-            ref produces a delta in the requested range."""
-            try:
-                joined = child_df.join_asof(
-                    ref_df, left_on=self.date, right_on="_ref_date",
-                    by=self.pid, strategy=strategy,
-                    tolerance=f"{tolerance}d",
-                )
-            except Exception:
-                return
-            if "_ref_date" not in joined.columns:
-                return
-            ref_dates = joined.get_column("_ref_date")
-            delta = (
-                joined.get_column(self.date).to_numpy().astype("datetime64[D]")
-                - ref_dates.fill_null(joined.get_column(self.date)).to_numpy().astype("datetime64[D]")
-            ).astype("timedelta64[D]").astype(int)
-            matched_flag = ~ref_dates.is_null().to_numpy()
-            if signed_around:
-                ok = matched_flag & (delta >= min_days) & (delta <= days)
-            elif direction == "after":
-                ok = matched_flag & (delta >= min_days) & (delta <= days)
-            elif direction == "before":
-                neg = -delta
-                ok = matched_flag & (neg >= min_days) & (neg <= days)
-            else:
-                ad = np.abs(delta)
-                ok = matched_flag & (ad >= min_days) & (ad <= days)
-            idxs = joined.get_column("_idx").to_numpy()
-            result[idxs[ok]] = True
-
-        if direction == "after":
-            _apply_asof("backward", days)
-        elif direction == "before":
-            _apply_asof("forward", days)
-        elif signed_around:
-            # backward looks for ref ≤ child within `days`; forward for
-            # ref > child within |min_days|.
-            _apply_asof("backward", days)
-            _apply_asof("forward", abs(min_days))
+        bands = window_bands(direction, min_days, days)
+        if from_ref_side:
+            bands = mirror_bands(bands)
+            query_shift, target_shift = ref_offset_days, 0
         else:
-            # `around` (unsigned) or no direction — try both sides.
-            _apply_asof("backward", days)
-            _apply_asof("forward", days)
+            query_shift, target_shift = 0, ref_offset_days
 
-        return pl.Series(result, dtype=pl.Boolean)
+        match = band_window_match(
+            pid_codes, day,
+            query_mask.to_numpy(), target_mask.to_numpy(), bands,
+            query_shift=query_shift, target_shift=target_shift,
+            exclude_self=exclude_self,
+        )
+        return pl.Series(match, dtype=pl.Boolean)
 
     def _universal_pids(
         self, child_mask, ref_mask, in_window,
@@ -537,13 +516,9 @@ class PolarsEvaluator:
             )
             matching &= full
         if every_right:
-            opposite = (
-                "before" if direction == "after"
-                else "after" if direction == "before"
-                else direction
-            )
             rhs_in_window = self._rows_in_window(
-                ref_mask, child_mask, days, min_days, opposite, -ref_offset_days
+                ref_mask, child_mask, days, min_days, direction,
+                ref_offset_days, from_ref_side=True,
             )
             full = self._every_pids_one_sided(
                 pid, ref_mask, ref_mask & rhs_in_window
@@ -579,7 +554,11 @@ class PolarsEvaluator:
 
     def _eval_event_window(
         self, child_mask, ref_mask, inside, min_events, max_events, direction,
+        exclude_self: bool = True,
     ) -> pl.Series:
+        """`exclude_self` (default): a row never matches a window anchored
+        at itself — positions are unique, so offset 0 IS the anchor row.
+        Anchored event-window aggregates pass False."""
         if not bool(child_mask.any()) or not bool(ref_mask.any()):
             return self._false_mask()
         pid = self.df.get_column(self.pid)
@@ -609,7 +588,10 @@ class PolarsEvaluator:
                     lo, hi = rp - max_events, rp - min_events
                 else:
                     lo, hi = rp + min_events, rp + max_events
-                in_win |= (p_pos >= lo) & (p_pos <= hi)
+                win = (p_pos >= lo) & (p_pos <= hi)
+                if exclude_self:
+                    win &= p_pos != rp
+                in_win |= win
             sel = (p_child & in_win) if inside else (p_child & ~in_win)
             result[rows] = sel
         return pl.Series(result, dtype=pl.Boolean)
@@ -668,7 +650,16 @@ class PolarsEvaluator:
 
     # ---- Aggregate evaluation ----
 
-    def _eval_aggregate(self, node: AggregateExpr, row_mask: pl.Series | None) -> pl.Series:
+    def _eval_aggregate(
+        self,
+        node: AggregateExpr,
+        row_mask: pl.Series | None,
+        evaluable_pids: set | None = None,
+    ) -> pl.Series:
+        """`evaluable_pids` (anchored windows): persons whose window may be
+        EMPTY still get an aggregate — the empty-set defaults are 0 for
+        sum/count (which may pass the threshold) and NA for everything
+        else (which never passes). See the pandas evaluator."""
         if node.column not in self.df.columns:
             raise TQueryColumnError(f"Column '{node.column}' not found in DataFrame")
         col = self.df.get_column(node.column)
@@ -678,6 +669,17 @@ class PolarsEvaluator:
             sub_pid = pid.filter(row_mask)
         else:
             sub_pid = pid
+
+        # Persons with an empty window are absent from the groupby below;
+        # they match iff the empty-set default (0 for sum/count) passes.
+        def _add_missing_evaluable(matching_pids: list, present) -> list:
+            if evaluable_pids is None:
+                return matching_pids
+            if node.func in ("sum", "count", "n") and bool(
+                _OPS[node.op](0.0, node.value)
+            ):
+                matching_pids.extend(p for p in evaluable_pids if p not in present)
+            return matching_pids
 
         # Try fast polars-native paths for standard funcs. Relative
         # range/rise/fall fall through to the per-pid Python loop below,
@@ -710,6 +712,9 @@ class PolarsEvaluator:
                 )
             ok = op(agg.get_column("_agg"), node.value).fill_null(False)
             matching_pids = agg.filter(ok).get_column("_p").to_list()
+            matching_pids = _add_missing_evaluable(
+                matching_pids, set(agg.get_column("_p").to_list())
+            )
             return pid.is_in(matching_pids)
 
         # Custom funcs (rise / fall): per-pid python loop on numpy values.
@@ -723,6 +728,7 @@ class PolarsEvaluator:
             agg_v = _agg_scalar(np.array(vs), node.func, relative=getattr(node, "relative", False))
             if op(agg_v, node.value) if not np.isnan(agg_v) else False:
                 matching.append(p)
+        matching = _add_missing_evaluable(matching, per_pid_vals)
         return pid.is_in(matching)
 
     def _eval_within_aggregate(self, node: WithinExpr) -> pl.Series:
@@ -732,36 +738,87 @@ class PolarsEvaluator:
             if node.outside:
                 raise TypeError("`outside` over a sliding aggregate is not supported")
             return self._sliding_days_aggregate(agg_node, node.days)
-        ref_inner, _ = _unwrap_quantifier(node.ref)
+        ref_inner, every_right = _unwrap_quantifier(node.ref)
         ref_inner, ref_offset = _unwrap_shift(ref_inner)
         ref_mask = self.evaluate(ref_inner)
+        if every_right:
+            if node.outside:
+                raise TypeError(
+                    "`outside ... every REF` has no defined semantics for "
+                    "anchored aggregates"
+                )
+            return self._eval_aggregate_per_ref(agg_node, node, ref_mask, ref_offset)
         all_rows = self._true_mask()
+        # exclude_self=False: an anchor row stays inside its own window
+        # (mirrors the pandas evaluator's anchored-aggregate convention).
         in_window = self._rows_in_window(
             all_rows, ref_mask, node.days, node.min_days,
-            node.direction, ref_offset,
+            node.direction, ref_offset, exclude_self=False,
         )
+        pid = self.df.get_column(self.pid)
+        evaluable = set(pid.filter(ref_mask).unique().to_list())
         if node.outside:
-            pid = self.df.get_column(self.pid)
-            evaluable = pid.filter(ref_mask).unique().to_list()
-            in_window = pid.is_in(evaluable) & ~in_window
-        return self._eval_aggregate(agg_node, row_mask=in_window)
+            in_window = pid.is_in(list(evaluable)) & ~in_window
+        return self._eval_aggregate(
+            agg_node, row_mask=in_window, evaluable_pids=evaluable,
+        )
+
+    def _eval_aggregate_per_ref(
+        self,
+        agg_node: AggregateExpr,
+        node: WithinExpr,
+        ref_mask: pl.Series,
+        ref_offset: int,
+    ) -> pl.Series:
+        """Universal-ref anchored aggregate — delegates to the shared
+        numpy core (see pandas `_eval_aggregate_per_ref`)."""
+        if agg_node.column not in self.df.columns:
+            raise TQueryColumnError(f"Column '{agg_node.column}' not in DataFrame")
+        pid_np = self.df.get_column(self.pid).to_numpy()
+        _, pid_codes = np.unique(pid_np, return_inverse=True)
+        day = (
+            self.df.get_column(self.date).to_numpy()
+            .astype("datetime64[D]").astype(np.int64)
+        )
+        # Nulls become NaN in the float numpy view (what the core expects).
+        values = np.asarray(
+            self.df.get_column(agg_node.column).cast(pl.Float64).to_numpy(),
+            dtype="float64",
+        )
+        bands = window_bands(node.direction, node.min_days, node.days)
+        passed = per_ref_window_agg_pass(
+            pid_codes, day, values, ref_mask.to_numpy(), bands, ref_offset,
+            agg_node.func, _OPS[agg_node.op], agg_node.value,
+            relative=getattr(agg_node, "relative", False),
+        )
+        return pl.Series(passed, dtype=pl.Boolean)
 
     def _eval_inside_aggregate(self, node: InsideExpr) -> pl.Series:
         agg_node: AggregateExpr = node.child  # type: ignore[assignment]
         sliding = node.direction is None and node.ref is None
         if sliding:
             return self._sliding_events_aggregate(agg_node, node.max_events)
+        if isinstance(node.ref, Quantifier):
+            raise TypeError(
+                "Universal refs (`every REF`) are not supported for "
+                "event-window aggregates; use a day-window "
+                "(`inside N days after every REF`) instead"
+            )
         ref_mask = self.evaluate(node.ref)
         all_rows = self._true_mask()
+        # exclude_self=False: the anchor row stays inside its own window.
         in_window = self._eval_event_window(
             all_rows, ref_mask, True,
             node.min_events, node.max_events, node.direction,
+            exclude_self=False,
         )
+        pid = self.df.get_column(self.pid)
+        evaluable = set(pid.filter(ref_mask).unique().to_list())
         if not node.inside:
-            pid = self.df.get_column(self.pid)
-            evaluable = pid.filter(ref_mask).unique().to_list()
-            in_window = pid.is_in(evaluable) & ~in_window
-        return self._eval_aggregate(agg_node, row_mask=in_window)
+            in_window = pid.is_in(list(evaluable)) & ~in_window
+        return self._eval_aggregate(
+            agg_node, row_mask=in_window, evaluable_pids=evaluable,
+        )
 
     def _sliding_days_aggregate(self, node: AggregateExpr, days: int) -> pl.Series:
         if node.column not in self.df.columns:

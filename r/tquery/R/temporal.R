@@ -6,6 +6,7 @@
 
 eval_before_after <- function(env, left_mask, right_mask, op,
                               every_left = FALSE, every_right = FALSE,
+                              any_left = FALSE, any_right = FALSE,
                               left_offset_days = 0L, right_offset_days = 0L) {
   if (!any(left_mask) || !any(right_mask)) return(rep(FALSE, env$nrow))
 
@@ -40,10 +41,14 @@ eval_before_after <- function(env, left_mask, right_mask, op,
   if (op == "before") {
     agg[, ok := if (every_left && every_right) l_max < r_min
                else if (every_left)            l_max < r_max
+               else if (every_right)           l_min < r_min
+               else if (any_right)             l_min < r_max  # existential
                else                             l_min < r_min]
   } else {  # after
     agg[, ok := if (every_left && every_right) l_min > r_max
                else if (every_right)           l_max > r_max
+               else if (every_left)            l_min > r_min
+               else if (any_left)              l_max > r_min  # existential
                else                             l_min > r_min]
   }
   matching_pids <- agg$pid[agg$ok]
@@ -51,24 +56,85 @@ eval_before_after <- function(env, left_mask, right_mask, op,
 }
 
 # --- within days -------------------------------------------------------
-# Lift of r-spike/within_days.R with three additions:
+# Band-existence evaluation (mirrors tquery/_temporal.py):
+#   * The window spec is translated into closed day-offset bands; a child
+#     row matches iff ANY ref row of the person falls in a band. Using
+#     non-equi joins (not roll/nearest joins) means lower-bounded windows
+#     (`inside 30 to 90 days after Y`) cannot miss a qualifying ref just
+#     because a nearer, non-qualifying ref exists.
+#   * exclude_self (default TRUE): a row never serves as its own
+#     reference — `X inside 0 to 5 days after X` means "another X row",
+#     so a lone X does not match itself but a second same-date X does.
+#     Anchored aggregates pass FALSE (anchor stays in its own window).
 #   * ref_mask == NULL → window relative to each person's first event.
 #   * outside flag → row-level complement restricted to evaluable persons.
 #   * universal modes (every_left / every_right) → "ALL child rows for
 #     persons where every child row (or every ref row) has a counterpart".
 
+# Closed day-offset bands: a ref at day t qualifies for a child at day d
+# iff t ∈ [d + a, d + b] for some band c(a, b).
+.window_bands <- function(direction, min_days, days) {
+  if (!is.null(direction) && direction == "after") {
+    return(list(c(-days, -min_days)))
+  }
+  if (!is.null(direction) && direction == "before") {
+    return(list(c(min_days, days)))
+  }
+  # around (signed / unsigned) or no direction
+  if (min_days < 0L) return(list(c(-days, -min_days)))
+  if (min_days == 0L) return(list(c(-days, days)))
+  list(c(-days, -min_days), c(min_days, days))
+}
+
+# Swap query/target roles: if target ∈ [q + a, q + b] then query ∈ [t − b, t − a].
+.mirror_bands <- function(bands) lapply(bands, function(b) c(-b[2L], -b[1L]))
+
+# Existence test: TRUE at query rows having ≥ 1 target row (of the same
+# person) in one of the bands — excluding, if requested, the row itself.
+.band_match <- function(env, query_mask, target_mask, bands,
+                        query_shift = 0L, target_shift = 0L,
+                        exclude_self = TRUE) {
+  out <- rep(FALSE, env$nrow)
+  q_idx <- which(query_mask)
+  t_idx <- which(target_mask)
+  if (length(q_idx) == 0L || length(t_idx) == 0L) return(out)
+
+  qdt <- data.table(
+    pid    = env$pid[q_idx],
+    q_date = env$date[q_idx] + query_shift,
+    q_rid  = q_idx
+  )
+  tdt <- data.table(
+    pid    = env$pid[t_idx],
+    t_date = env$date[t_idx] + target_shift,
+    t_rid  = t_idx
+  )
+
+  matched <- rep(FALSE, length(q_idx))
+  for (band in bands) {
+    qdt[, `:=`(lo = q_date + band[1L], hi = q_date + band[2L])]
+    hits <- tdt[qdt,
+      .(n = sum(!is.na(x.t_rid) & (!exclude_self | x.t_rid != i.q_rid))),
+      by = .EACHI,
+      on = .(pid, t_date >= lo, t_date <= hi)
+    ]
+    matched <- matched | (hits$n > 0L)
+  }
+  out[q_idx] <- matched
+  out
+}
+
 eval_within_days <- function(env, child_mask, ref_mask, days,
                              min_days = 0L, direction = NULL,
                              every_left = FALSE, every_right = FALSE,
-                             ref_offset_days = 0L, outside = FALSE) {
+                             ref_offset_days = 0L, outside = FALSE,
+                             exclude_self = TRUE) {
   if (!any(child_mask)) return(rep(FALSE, env$nrow))
 
-  pid   <- env$pid
-  dates <- env$date
-
-  # ref_mask = NULL: distance from each person's first event
+  # ref_mask = NULL: distance from each person's first event (a
+  # per-person date, not a row — no self-exclusion).
   if (is.null(ref_mask)) {
-    dt_local <- data.table(pid = pid, date = dates, row = seq_len(env$nrow))
+    dt_local <- data.table(pid = env$pid, date = env$date, row = seq_len(env$nrow))
     dt_local[, first := min(date), by = pid]
     diff <- as.integer(abs(dt_local$date - dt_local$first))
     return(child_mask & (diff >= min_days) & (diff <= days))
@@ -77,148 +143,54 @@ eval_within_days <- function(env, child_mask, ref_mask, days,
 
   result <- .eval_within_days_core(
     env, child_mask, ref_mask, days, min_days, direction,
-    every_left, every_right, ref_offset_days
+    every_left, every_right, ref_offset_days, exclude_self
   )
   if (outside) return(.row_complement_evaluable(env, child_mask, ref_mask, result))
   result
 }
 
 .eval_within_days_core <- function(env, child_mask, ref_mask, days, min_days, direction,
-                                   every_left, every_right, ref_offset_days) {
-  pid   <- env$pid
-  dates <- env$date
+                                   every_left, every_right, ref_offset_days,
+                                   exclude_self = TRUE) {
+  bands <- .window_bands(direction, min_days, days)
+  lhs <- .band_match(env, child_mask, ref_mask, bands,
+                     query_shift = 0L, target_shift = ref_offset_days,
+                     exclude_self = exclude_self)
 
-  child_dt <- data.table(
-    pid      = pid[child_mask],
-    date     = dates[child_mask],
-    orig_idx = which(child_mask)
-  )
-  ref_dt <- data.table(
-    pid      = pid[ref_mask],
-    ref_date = dates[ref_mask] + ref_offset_days
-  )
-  setkey(child_dt, pid, date)
-  setkey(ref_dt, pid, ref_date)
+  if (!every_left && !every_right) return(lhs)
 
-  signed <- !is.null(direction) && direction == "around" && min_days < 0L
-
-  roll_join <- function(roll_val, ends) {
-    ref_dt[child_dt,
-      .(orig_idx = i.orig_idx, child_date = i.date, ref_date = x.ref_date),
-      on = .(pid, ref_date = date), roll = roll_val, rollends = ends
-    ]
-  }
-
-  # LHS-anchored: for each child, find a ref in the window.
-  if (is.null(direction) || direction == "around") {
-    bw_roll <- days
-    fw_roll <- if (signed) -abs(min_days) else -days
-    bw <- roll_join(bw_roll, c(FALSE, TRUE))
-    fw <- roll_join(fw_roll, c(TRUE, FALSE))
-    matched <- rbind(bw, fw)
-  } else if (direction == "after") {
-    matched <- roll_join(days, c(FALSE, TRUE))
-  } else if (direction == "before") {
-    matched <- roll_join(-days, c(TRUE, FALSE))
-  } else {
-    stop("Unknown direction: ", direction)
-  }
-  matched <- matched[!is.na(ref_date)]
-  matched[, delta := as.integer(child_date - ref_date)]
-  if (signed) {
-    matched <- matched[delta >= min_days & delta <= days]
-  } else {
-    matched <- matched[abs(delta) >= min_days & abs(delta) <= days]
-  }
-
-  if (!every_left && !every_right) {
-    out <- rep(FALSE, env$nrow)
-    out[unique(matched$orig_idx)] <- TRUE
-    return(out)
-  }
-
-  # Universal modes: rebuild per-person totals.
-  # every_left: every child row in person must have a qualifying ref.
-  # every_right: every ref row in person must have a qualifying child.
-  child_pids_unique <- unique(pid[child_mask])
-  ref_pids_unique   <- unique(pid[ref_mask])
-  candidate <- intersect(as.character(child_pids_unique), as.character(ref_pids_unique))
-  matching_pids <- candidate
+  # Universal modes: persons need child AND ref events (non-empty rule).
+  pid_chr <- as.character(env$pid)
+  matching_pids <- intersect(unique(pid_chr[child_mask]), unique(pid_chr[ref_mask]))
 
   if (every_left) {
-    # number of matched child rows per pid vs. total child rows
-    child_total <- tapply(seq_along(pid[child_mask]), as.character(pid[child_mask]), length)
-    if (nrow(matched) > 0L) {
-      matched_pid <- pid[matched$orig_idx]
-      hit <- tapply(matched$orig_idx, as.character(matched_pid), function(idx) length(unique(idx)))
-    } else hit <- stats::setNames(integer(), character())
-    full <- names(child_total)[
-      vapply(names(child_total),
-             function(p) !is.na(hit[p]) && hit[p] == child_total[[p]],
-             logical(1))
-    ]
-    matching_pids <- intersect(matching_pids, full)
+    # Every child row must have a qualifying ref.
+    bad <- unique(pid_chr[child_mask & !lhs])
+    matching_pids <- setdiff(matching_pids, bad)
   }
 
   if (every_right) {
-    # Run the join from the RHS side, looking the opposite direction.
-    rhs <- .eval_every_right(env, child_mask, ref_mask, days, min_days, direction, ref_offset_days)
-    matching_pids <- intersect(matching_pids, rhs)
+    # Every ref row must have a qualifying child: same band test with
+    # roles swapped and bands mirrored.
+    rhs <- .band_match(env, ref_mask, child_mask, .mirror_bands(bands),
+                       query_shift = ref_offset_days, target_shift = 0L,
+                       exclude_self = exclude_self)
+    bad <- unique(pid_chr[ref_mask & !rhs])
+    matching_pids <- setdiff(matching_pids, bad)
   }
 
-  child_mask & (as.character(pid) %in% matching_pids)
-}
-
-# every_right: every ref row has a qualifying child within the window.
-# Mirrors the rhs_merged block in Python _temporal.py.
-.eval_every_right <- function(env, child_mask, ref_mask, days, min_days, direction, ref_offset_days) {
-  pid   <- env$pid
-  dates <- env$date
-
-  ref_lookup <- data.table(
-    pid      = pid[ref_mask],
-    ref_date = dates[ref_mask] + ref_offset_days,
-    orig_idx = which(ref_mask)
-  )
-  child_lookup <- data.table(
-    pid        = pid[child_mask],
-    child_date = dates[child_mask]
-  )
-  setkey(ref_lookup, pid, ref_date)
-  setkey(child_lookup, pid, child_date)
-
-  # Opposite direction from LHS: if child is after ref (direction "after"),
-  # then from ref we look FORWARD for a child.
-  if (is.null(direction) || direction == "around") {
-    bw <- child_lookup[ref_lookup, .(orig_idx = i.orig_idx, ref_date = i.ref_date, child_date = x.child_date),
-                       on = .(pid, child_date = ref_date), roll = days, rollends = c(FALSE, TRUE)]
-    fw <- child_lookup[ref_lookup, .(orig_idx = i.orig_idx, ref_date = i.ref_date, child_date = x.child_date),
-                       on = .(pid, child_date = ref_date), roll = -days, rollends = c(TRUE, FALSE)]
-    matched <- rbind(bw, fw)
-  } else if (direction == "after") {
-    matched <- child_lookup[ref_lookup, .(orig_idx = i.orig_idx, ref_date = i.ref_date, child_date = x.child_date),
-                            on = .(pid, child_date = ref_date), roll = -days, rollends = c(TRUE, FALSE)]
-  } else if (direction == "before") {
-    matched <- child_lookup[ref_lookup, .(orig_idx = i.orig_idx, ref_date = i.ref_date, child_date = x.child_date),
-                            on = .(pid, child_date = ref_date), roll = days, rollends = c(FALSE, TRUE)]
-  }
-  matched <- matched[!is.na(child_date)]
-  matched[, delta := as.integer(abs(child_date - ref_date))]
-  matched <- matched[delta >= min_days & delta <= days]
-
-  total <- tapply(seq_along(pid[ref_mask]), as.character(pid[ref_mask]), length)
-  hit   <- if (nrow(matched) > 0L) tapply(matched$orig_idx, as.character(pid[matched$orig_idx]),
-                                          function(idx) length(unique(idx)))
-           else stats::setNames(integer(), character())
-  names(total)[vapply(names(total),
-                      function(p) !is.na(hit[p]) && hit[p] == total[[p]],
-                      logical(1))]
+  child_mask & (pid_chr %in% matching_pids)
 }
 
 # --- inside / outside (event-position window) --------------------------
 
+# exclude_self (default TRUE): a row never matches a window anchored at
+# itself — event positions are unique per row, so offset 0 IS the anchor
+# row. Anchored event-window aggregates pass FALSE (the anchor row stays
+# inside its own window).
 eval_inside_outside <- function(env, child_mask, ref_mask, inside,
-                                min_events, max_events, direction) {
+                                min_events, max_events, direction,
+                                exclude_self = TRUE) {
   if (!any(child_mask) || !any(ref_mask)) return(rep(FALSE, env$nrow))
 
   pid <- env$pid
@@ -247,7 +219,9 @@ eval_inside_outside <- function(env, child_mask, ref_mask, inside,
       } else {  # around: signed offsets
         lo <- rp + min_events; hi <- rp + max_events
       }
-      in_window <- in_window | (p_event_num >= lo & p_event_num <= hi)
+      win <- p_event_num >= lo & p_event_num <= hi
+      if (exclude_self) win <- win & (p_event_num != rp)
+      in_window <- in_window | win
     }
     result[p_rows] <- if (inside) (p_child & in_window) else (p_child & !in_window)
   }

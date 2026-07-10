@@ -51,9 +51,18 @@ def eval_range_prefix(
     child_mask: pd.Series,
     pid_col: pd.Series,
 ) -> pd.Series:
-    """Count range: persons with between min_n and max_n events (inclusive)."""
+    """Count range: persons with between min_n and max_n events (inclusive).
+
+    Explicit-0 rule: with a literal lower bound of 0 (`0-2 of K50`),
+    persons with ZERO matching events are included — marked on their
+    full timeline, the same convention as `not`. A lower bound >= 1
+    keeps the classic behavior (matching rows of persons with matches).
+    """
     counts = child_mask.groupby(pid_col).transform("sum")
-    return child_mask & (counts >= min_n) & (counts <= max_n)
+    result = child_mask & (counts >= min_n) & (counts <= max_n)
+    if min_n == 0:
+        result = result | (counts == 0)
+    return result
 
 
 def _eval_count_prefix(
@@ -62,14 +71,24 @@ def _eval_count_prefix(
     child_mask: pd.Series,
     pid_col: pd.Series,
 ) -> pd.Series:
-    """min/max/exactly N — person-level count condition broadcast to rows."""
+    """min/max/exactly N — person-level count condition broadcast to rows.
+
+    Explicit-0 rule: when the user writes a literal 0 (`min 0`, `max 0`,
+    `exactly 0`), persons with ZERO matching events are included and
+    marked on their full timeline (the `not` convention) — `exactly 0 of
+    K50` ≡ `not K50`. With n >= 1 the classic behavior stands: `max 2 of
+    K50` requires at least one K50 and marks only the matching rows.
+    """
     counts = child_mask.groupby(pid_col).transform("sum")
     if kind == "min":
-        return child_mask & (counts >= n)
+        result = child_mask & (counts >= n)
     elif kind == "max":
-        return child_mask & (counts <= n)
+        result = child_mask & (counts <= n)
     else:  # exactly
-        return child_mask & (counts == n)
+        result = child_mask & (counts == n)
+    if n == 0:
+        result = result | (counts == 0)
+    return result
 
 
 def _eval_ordinal(
