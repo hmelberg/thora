@@ -157,6 +157,9 @@ QUERIES: list[str] = [
     "range(dose) > 30 inside 5 events after K50",
     "sum(dose) > 200 inside 5 events",
     "max(dose) > 80 inside 3 events",
+    # Negative literals in thresholds/comparisons
+    "fall(dose) > -1",
+    "dose > -0.5",
     # v0.2.2: signed range — rise / fall
     "rise(dose) > 30",
     "rise(dose) > 80",

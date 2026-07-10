@@ -91,9 +91,12 @@ eval_before_after <- function(env, left_mask, right_mask, op,
 
 # Existence test: TRUE at query rows having ≥ 1 target row (of the same
 # person) in one of the bands — excluding, if requested, the row itself.
+# `values` is the axis: per-row dates by default, or event positions for
+# event-count windows (any numeric works — the joins are generic).
 .band_match <- function(env, query_mask, target_mask, bands,
                         query_shift = 0L, target_shift = 0L,
-                        exclude_self = TRUE) {
+                        exclude_self = TRUE, values = NULL) {
+  if (is.null(values)) values <- env$date
   out <- rep(FALSE, env$nrow)
   q_idx <- which(query_mask)
   t_idx <- which(target_mask)
@@ -101,12 +104,12 @@ eval_before_after <- function(env, left_mask, right_mask, op,
 
   qdt <- data.table(
     pid    = env$pid[q_idx],
-    q_date = env$date[q_idx] + query_shift,
+    q_date = values[q_idx] + query_shift,
     q_rid  = q_idx
   )
   tdt <- data.table(
     pid    = env$pid[t_idx],
-    t_date = env$date[t_idx] + target_shift,
+    t_date = values[t_idx] + target_shift,
     t_rid  = t_idx
   )
 
@@ -193,39 +196,23 @@ eval_inside_outside <- function(env, child_mask, ref_mask, inside,
                                 exclude_self = TRUE) {
   if (!any(child_mask) || !any(ref_mask)) return(rep(FALSE, env$nrow))
 
-  pid <- env$pid
-  result <- rep(FALSE, env$nrow)
+  # Event positions per person (0-based, input order — assumes sorted),
+  # used as the axis of the generic band match: a child at position p is
+  # in the window of a ref at q iff p ∈ [q+min, q+max] (after/around) or
+  # p ∈ [q−max, q−min] (before) — i.e. the ref lies in a band relative
+  # to the child. Self-exclusion falls out via row ids as for dates.
+  dt_local <- data.table(pid = env$pid)
+  dt_local[, pos := seq_len(.N) - 1L, by = pid]
+  positions <- dt_local$pos
 
-  # Event number per person (0-based, by appearance order — assumes sorted)
-  dt_local <- data.table(idx = seq_len(env$nrow), pid = pid)
-  dt_local[, event_num := seq_len(.N) - 1L, by = pid]
-  event_num <- dt_local$event_num
+  bands <- if (direction == "before") list(c(min_events, max_events))
+           else list(c(-max_events, -min_events))
 
-  ref_positions <- event_num[ref_mask]
-  ref_pids      <- pid[ref_mask]
-
-  for (p in unique(ref_pids)) {
-    p_rows         <- which(pid == p)
-    p_event_num    <- event_num[p_rows]
-    p_child        <- child_mask[p_rows]
-    p_ref_positions <- ref_positions[ref_pids == p]
-
-    in_window <- rep(FALSE, length(p_rows))
-    for (rp in p_ref_positions) {
-      if (direction == "after") {
-        lo <- rp + min_events; hi <- rp + max_events
-      } else if (direction == "before") {
-        lo <- rp - max_events; hi <- rp - min_events
-      } else {  # around: signed offsets
-        lo <- rp + min_events; hi <- rp + max_events
-      }
-      win <- p_event_num >= lo & p_event_num <= hi
-      if (exclude_self) win <- win & (p_event_num != rp)
-      in_window <- in_window | win
-    }
-    result[p_rows] <- if (inside) (p_child & in_window) else (p_child & !in_window)
-  }
-  result
+  match <- .band_match(env, child_mask, ref_mask, bands,
+                       exclude_self = exclude_self, values = positions)
+  if (inside) return(match)
+  has_ref <- env$pid %in% unique(env$pid[ref_mask])
+  child_mask & !match & has_ref
 }
 
 # --- helpers -----------------------------------------------------------

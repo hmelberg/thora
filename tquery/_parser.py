@@ -409,7 +409,15 @@ class Parser:
             return PrefixExpr(kind, n, child)
 
         if self._at_type(TokenType.ORDINAL):
+            tok = self._peek()
             n = self._advance().value
+            if n == 0:
+                # `0th X` would silently match nothing (ordinals are 1-based).
+                raise TQuerySyntaxError(
+                    "Ordinals start at 1st ('0th' selects nothing); "
+                    "for zero-count predicates use `exactly 0 of X`",
+                    self.expr, tok.pos,
+                )
             if self._at_keyword("of"):
                 self._advance()
             child = self._parse_within()
@@ -647,6 +655,21 @@ class Parser:
         if self._is_comparison_ahead():
             return self._parse_comparison()
 
+        # A keyword followed by a comparison operator is almost certainly a
+        # column whose name collides with a reserved word (`count > 5`).
+        # Refuse with guidance instead of a confusing code-expression error.
+        if (
+            tok.type == TokenType.KEYWORD
+            and self.pos + 1 < len(self.tokens)
+            and self.tokens[self.pos + 1].type == TokenType.OP
+            and self.tokens[self.pos + 1].value in (">", "<", ">=", "<=", "==", "!=")
+        ):
+            raise self._error(
+                f"'{tok.value}' is a reserved keyword and cannot be used as a "
+                f"column name in a comparison — rename the column (e.g. "
+                f"'{tok.value}_'), or use an aggregate form if you meant one"
+            )
+
         # Code expression (possibly comma-separated, with optional column spec)
         return self._parse_code_expr()
 
@@ -690,6 +713,10 @@ class Parser:
                 f"(>, <, >=, <=, ==, !=), got {op_tok.value!r}"
             )
         op = self._advance().value
+        negate = False
+        if self._at_type(TokenType.OP) and self._peek().value == "-":
+            self._advance()
+            negate = True
         val_tok = self._peek()
         if val_tok.type not in (TokenType.INT, TokenType.FLOAT):
             raise self._error(
@@ -700,7 +727,7 @@ class Parser:
         # by `rise`/`fall` (v0.2.3) and `range` (v0.2.4). The threshold
         # is normalised to a fraction at parse time, so 10% → 0.10.
         # `range(col) > X%` reads as "max is X% higher than min".
-        value = float(val_tok.value)
+        value = -float(val_tok.value) if negate else float(val_tok.value)
         relative = False
         if self._at_type(TokenType.PERCENT):
             self._advance()
@@ -731,11 +758,16 @@ class Parser:
     def _parse_comparison(self) -> ComparisonAtom:
         col_tok = self._advance()  # IDENT
         op_tok = self._advance()   # OP
+        negate = False
+        if self._at_type(TokenType.OP) and self._peek().value == "-":
+            self._advance()
+            negate = True
         val_tok = self._peek()
         if val_tok.type not in (TokenType.INT, TokenType.FLOAT):
             raise self._error(f"Expected number after '{op_tok.value}', got {val_tok.value!r}")
         self._advance()
-        return ComparisonAtom(col_tok.value, op_tok.value, float(val_tok.value))
+        value = -float(val_tok.value) if negate else float(val_tok.value)
+        return ComparisonAtom(col_tok.value, op_tok.value, value)
 
     def _parse_code_expr(self) -> CodeAtom:
         codes: list[str] = []

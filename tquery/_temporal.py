@@ -525,47 +525,28 @@ def eval_inside_outside(
         return pd.Series(False, index=df.index)
 
     pid = df[pid_col]
-    result = pd.Series(False, index=df.index)
+    pid_codes, _ = pd.factorize(pid, use_na_sentinel=False)
+    positions = pid.groupby(pid).cumcount().to_numpy().astype(np.int64)
+    child_np = child_mask.to_numpy()
+    ref_np = ref_mask.to_numpy()
 
-    # Compute event number per person
-    event_num = pid.groupby(pid).cumcount()
+    # A child at position p is in the window of a ref at position q iff
+    # p ∈ [q + min, q + max] (after/around, signed) or p ∈ [q − max,
+    # q − min] (before) — i.e. the ref lies in a band relative to the
+    # child, so the day-window core applies verbatim with positions as
+    # the "day" axis. Self-exclusion falls out identically: positions
+    # are unique per person, so offset 0 IS the anchor row.
+    if direction == "before":
+        bands = [(min_events, max_events)]
+    else:  # after / around (signed offsets)
+        bands = [(-max_events, -min_events)]
 
-    # For each person, find reference event positions
-    ref_positions = event_num[ref_mask]
-    ref_pids = pid[ref_mask]
-
-    # For each person, check if child events fall in the window
-    for p in ref_pids.unique():
-        p_mask = pid == p
-        p_event_num = event_num[p_mask]
-        p_child = child_mask[p_mask]
-        p_ref_positions = ref_positions[ref_pids == p].values
-
-        in_window = pd.Series(False, index=p_event_num.index)
-        for ref_pos in p_ref_positions:
-            if direction == "after":
-                # offsets +min_events..+max_events relative to ref
-                lo = ref_pos + min_events
-                hi = ref_pos + max_events
-            elif direction == "before":
-                # offsets −max_events..−min_events (i.e., positions
-                # ref-max..ref-min going backwards)
-                lo = ref_pos - max_events
-                hi = ref_pos - min_events
-            else:  # around: signed offsets
-                lo = ref_pos + min_events
-                hi = ref_pos + max_events
-            window = (p_event_num >= lo) & (p_event_num <= hi)
-            if exclude_self:
-                # Positions are unique per person: != ref_pos removes
-                # exactly the anchor row itself.
-                window = window & (p_event_num != ref_pos)
-            in_window = in_window | window
-
-        if inside:
-            matched = (p_child & in_window).values
-        else:
-            matched = (p_child & ~in_window).values
-        result.loc[p_mask.values] = matched
-
-    return result
+    match = band_window_match(
+        pid_codes, positions, child_np, ref_np, bands,
+        exclude_self=exclude_self,
+    )
+    if inside:
+        return pd.Series(match, index=df.index)
+    # outside: complement restricted to persons with >= 1 ref event
+    has_ref = np.isin(pid_codes, np.unique(pid_codes[ref_np]))
+    return pd.Series(child_np & ~match & has_ref, index=df.index)

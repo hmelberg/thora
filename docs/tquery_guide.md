@@ -316,6 +316,9 @@ Negative ordinals count from the end and compose with windows, e.g. `K50 inside 
 | `glucose > 8` | Rows where glucose column exceeds 8 |
 | `hba1c >= 6.5` | Rows where hba1c is at least 6.5 |
 | `age == 50` | Rows where age equals 50 |
+| `delta < -0.5` | Negative literals work in comparisons and aggregate thresholds |
+
+Column names that collide with reserved keywords (`count`, `min`, `range`, ...) cannot be used in comparisons — the parser raises a guided error; rename the column.
 
 #### Aggregate Expressions (v0.2+)
 

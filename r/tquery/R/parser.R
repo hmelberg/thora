@@ -273,6 +273,10 @@ parse_query <- function(expr) {
 
   if (.at_type(p, "ORDINAL")) {
     n <- .advance(p)$value
+    if (n == 0L) {
+      .error(p, paste0("Ordinals start at 1st ('0th' selects nothing); ",
+                       "for zero-count predicates use `exactly 0 of X`"))
+    }
     if (.at_keyword(p, "of")) .advance(p)
     return(new_prefix_expr("ordinal", n, .parse_within(p)))
   }
@@ -436,6 +440,17 @@ parse_query <- function(expr) {
   agg <- .try_aggregate_atom(p)
   if (!is.null(agg)) return(agg)
   if (.is_comparison_ahead(p)) return(.parse_comparison(p))
+  # Keyword followed by a comparison operator: a column name colliding
+  # with a reserved word (`count > 5`) — refuse with guidance.
+  if (tok$type == "KEYWORD" && p$pos + 1L <= length(p$tokens)) {
+    nxt <- p$tokens[[p$pos + 1L]]
+    if (nxt$type == "OP" && nxt$value %in% c(">", "<", ">=", "<=", "==", "!=")) {
+      .error(p, sprintf(paste0(
+        "'%s' is a reserved keyword and cannot be used as a column name ",
+        "in a comparison — rename the column (e.g. '%s_'), ",
+        "or use an aggregate form if you meant one"), tok$value, tok$value))
+    }
+  }
   .parse_code_expr(p)
 }
 
@@ -466,13 +481,15 @@ parse_query <- function(expr) {
       func, column, deparse(op_tok$value)))
   }
   op <- .advance(p)$value
+  negate <- FALSE
+  if (.at_type(p, "OP") && .peek(p)$value == "-") { .advance(p); negate <- TRUE }
   val_tok <- .peek(p)
   if (!(val_tok$type %in% c("INT", "FLOAT"))) {
     .error(p, sprintf("Expected a numeric threshold after '%s', got %s",
                       op, deparse(val_tok$value)))
   }
   .advance(p)
-  value <- as.numeric(val_tok$value)
+  value <- if (negate) -as.numeric(val_tok$value) else as.numeric(val_tok$value)
   relative <- FALSE
   if (.at_type(p, "PERCENT")) {
     .advance(p)
@@ -497,12 +514,15 @@ parse_query <- function(expr) {
 .parse_comparison <- function(p) {
   col_tok <- .advance(p)
   op_tok  <- .advance(p)
+  negate <- FALSE
+  if (.at_type(p, "OP") && .peek(p)$value == "-") { .advance(p); negate <- TRUE }
   val_tok <- .peek(p)
   if (!val_tok$type %in% c("INT", "FLOAT")) {
     .error(p, sprintf("Expected number after '%s', got %s", op_tok$value, deparse(val_tok$value)))
   }
   .advance(p)
-  new_comparison_atom(col_tok$value, op_tok$value, as.numeric(val_tok$value))
+  value <- if (negate) -as.numeric(val_tok$value) else as.numeric(val_tok$value)
+  new_comparison_atom(col_tok$value, op_tok$value, value)
 }
 
 .parse_code_expr <- function(p) {

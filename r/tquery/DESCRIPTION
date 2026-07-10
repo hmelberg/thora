@@ -1,7 +1,7 @@
 Package: tquery
 Type: Package
 Title: Temporal Query Language for Event-Level Health Data
-Version: 0.1.0
+Version: 0.2.6
 Author: Hans Olav Melberg [aut, cre]
 Maintainer: Hans Olav Melberg <hans.melberg@gmail.com>
 Description: A port of the Python tquery library: a temporal query

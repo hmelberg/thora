@@ -21,6 +21,7 @@ The Python reference implementation lives in `../tquery/`. When semantics are am
 3. Run the parser against every `query` in `golden/` and assert the AST shape matches the recorded shape.
 4. Run the evaluator and assert `count`, `pids`, and `rows` match the recorded expectations.
 5. Pass the per-node golden tests, then the end-to-end synthetic-data golden tests.
+6. Run `python tools/fuzz_parity.py --iters 200` — randomized small timelines diffed across backends. The golden corpus pins agreed answers on ONE dataset; the fuzzer hunts divergence on adversarial data nobody hand-picked (this is the class of bug that once let an asof-nearest window bug survive golden parity).
 
 ## Versioning
 

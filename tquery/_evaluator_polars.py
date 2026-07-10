@@ -566,35 +566,26 @@ class PolarsEvaluator:
         loc = pl.DataFrame({"_p": pid}).with_columns(
             _pos=(pl.col("_p").cum_count().over("_p") - 1)
         )
-        pos = loc.get_column("_pos").to_numpy()
-        p_np = pid.to_numpy()
+        pos = loc.get_column("_pos").to_numpy().astype(np.int64)
+        _, pid_codes = np.unique(pid.to_numpy(), return_inverse=True)
         child_np = child_mask.to_numpy()
         ref_np = ref_mask.to_numpy()
 
-        per_pid_refs: dict[Any, list[int]] = defaultdict(list)
-        for i, r in enumerate(ref_np):
-            if r:
-                per_pid_refs[p_np[i]].append(int(pos[i]))
+        # Positions as the "day" axis of the shared band core — see the
+        # pandas eval_inside_outside for the band derivation.
+        if direction == "before":
+            bands = [(min_events, max_events)]
+        else:  # after / around (signed offsets)
+            bands = [(-max_events, -min_events)]
 
-        result = np.zeros(self.nrow, dtype=bool)
-        for p, ref_list in per_pid_refs.items():
-            rows = np.where(p_np == p)[0]
-            p_pos = pos[rows]; p_child = child_np[rows]
-            in_win = np.zeros(rows.size, dtype=bool)
-            for rp in ref_list:
-                if direction == "after":
-                    lo, hi = rp + min_events, rp + max_events
-                elif direction == "before":
-                    lo, hi = rp - max_events, rp - min_events
-                else:
-                    lo, hi = rp + min_events, rp + max_events
-                win = (p_pos >= lo) & (p_pos <= hi)
-                if exclude_self:
-                    win &= p_pos != rp
-                in_win |= win
-            sel = (p_child & in_win) if inside else (p_child & ~in_win)
-            result[rows] = sel
-        return pl.Series(result, dtype=pl.Boolean)
+        match = band_window_match(
+            pid_codes, pos, child_np, ref_np, bands,
+            exclude_self=exclude_self,
+        )
+        if inside:
+            return pl.Series(match, dtype=pl.Boolean)
+        has_ref = np.isin(pid_codes, np.unique(pid_codes[ref_np]))
+        return pl.Series(child_np & ~match & has_ref, dtype=pl.Boolean)
 
     # ---- Span / Between ----
 

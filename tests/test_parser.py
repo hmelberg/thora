@@ -224,6 +224,26 @@ class TestParserPrefix:
         with pytest.raises(TQuerySyntaxError, match="-0"):
             parse("-0th K51")
 
+    def test_zero_ordinal_errors(self):
+        # `0th X` would silently match nothing — guided error instead.
+        with pytest.raises(TQuerySyntaxError, match="Ordinals start at 1st"):
+            parse("0th K50")
+
+    def test_negative_comparison_value(self):
+        ast = parse("glucose < -1")
+        assert isinstance(ast, ComparisonAtom)
+        assert ast.value == -1.0
+
+    def test_negative_aggregate_threshold(self):
+        ast = parse("rise(temp) > -2.5")
+        assert ast.value == -2.5
+
+    def test_keyword_column_comparison_guided_error(self):
+        with pytest.raises(TQuerySyntaxError, match="reserved keyword"):
+            parse("count > 5")
+        with pytest.raises(TQuerySyntaxError, match="reserved keyword"):
+            parse("K50 and range >= 2")
+
     def test_negative_ordinal_as_window_ref(self):
         # Combines the new negative ordinal with the window grammar.
         ast = parse("K50 inside 30 days after -1st K51")

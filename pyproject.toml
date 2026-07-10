@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "tquery"
-version = "0.1.0"
+version = "0.2.6"
 description = "Temporal query language for event-level health data in pandas"
 requires-python = ">=3.10"
 # pandas 3.x is the primary supported version (the test suite and the
